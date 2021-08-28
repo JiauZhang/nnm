@@ -2,7 +2,9 @@ from __future__ import print_function, division
 import numpy as np
 import cv2
 
+import tensorflow as tf
 from tensorflow.keras.datasets import mnist
+from tensorflow.keras import Input
 from tensorflow.keras.layers import InputLayer, Dense
 from tensorflow.keras.models import Sequential, Model
 from tensorflow_addons.layers import Maxout
@@ -22,7 +24,7 @@ class Generator(Model):
                 InputLayer(input_shape=input_dim),
                 Dense(1200, activation='relu'),
                 Dense(1200, activation='relu'),
-                Dense(output_dim, activation='sigmoid'),
+                Dense(output_dim, activation='tanh'),
             ],
             name = 'Generator'
         )
@@ -74,12 +76,14 @@ class GAN():
         self.discriminator = Discriminator(self.d_input_dim, self.d_output_dim)
         self.discriminator.compile(optimizer=self.optimizer, loss='binary_crossentropy')
 
-        self.generator_discriminator = Sequential()        
         self.generator = Generator(self.g_input_dim, self.g_output_dim)
+        self.generator_discriminator = Sequential()
         self.generator_discriminator.add(self.generator)
         self.discriminator.trainable = False
         self.generator_discriminator.add(self.discriminator)
-        self.generator_discriminator.compile(optimizer=self.optimizer, loss='binary_crossentropy')        
+        self.generator_discriminator.compile(optimizer=self.optimizer, loss='binary_crossentropy')
+
+        self.writer = tf.summary.create_file_writer('./runs/')
     
     def train(self):
         # load training dataset
@@ -105,25 +109,32 @@ class GAN():
             # make training data for generator
             noise = np.random.normal(0, 1, (self.batch_size, self.g_input_dim))
             # train generator
-            g_loss = self.generator_discriminator.train_on_batch(noise, fake)
+            g_loss = self.generator_discriminator.train_on_batch(noise, real)
 
-            print('step={}-->d_loss={}, g_loss={}'.format(step, d_loss, g_loss))
+            with self.writer.as_default():
+                tf.summary.scalar('loss/g_loss', g_loss, step)
+                tf.summary.scalar('loss/d_loss', d_loss, step)
 
             if step % self.sample_intervel == 0:
-                sample_count = 8
+                sample_row = 4
+                sample_col = 4
+                sample_count = sample_row * sample_col
+                samples = np.zeros((sample_row * 28, sample_col * 28))
                 noise = np.random.normal(0, 1, (sample_count, self.g_input_dim))
                 g_images = self.generator(noise, training=False).numpy()
-                g_images = 0.5 * g_images + 0.5
-                g_images = np.clip(g_images, 0, 1) * 255
+                g_images = 0.5 * (g_images + 1.0)
+                g_images = np.clip(g_images*255, 0, 255)
 
-                for idx in range(sample_count):
-                    sample_name = '{}_{}.png'.format(step, idx)
-                    cv2.imwrite(sample_name, g_images[idx].reshape(28, 28))
+                for r in range(sample_row):
+                    for c in range(sample_col):
+                        samples[r*28:(r+1)*28, c*28:(c+1)*28] = g_images[r*sample_col+c].reshape(28, 28)
+                sample_name = 'images/{}.png'.format(step)
+                cv2.imwrite(sample_name, samples)
 
     def test(self):
         pass
 
-gan = GAN(steps=800, batch_size=64, sample_intervel=200)
+gan = GAN(steps=2000, batch_size=64, sample_intervel=100)
 gan.train()
 
 print('\nTraining GAN finished!\n')
