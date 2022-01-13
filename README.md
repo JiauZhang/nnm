@@ -6,4 +6,8 @@
 - [Caffe 是如何运行的？](https://mp.weixin.qq.com/s?__biz=MzUzNjU2OTkyOA==&mid=2247484251&idx=2&sn=9f6ee659f7404572217b0b568c2a7cfe&chksm=faf5727ccd82fb6a905ef9bb0a6af993319dc9d3ad9c6c679f86d6771cebae0a7a3d1044eaac&token=2091525340&lang=zh_CN#rd)
 - [@tf.function的作用 ](https://mp.weixin.qq.com/s?__biz=MzUzNjU2OTkyOA==&mid=2247485273&idx=1&sn=2e1a01b80da67378cb983a3d75366c05&chksm=faf5767ecd82ff689de32829dc5977f3aaedee0ae63600622ceaff95b45c7716ff1333fb8269&token=2091525340&lang=zh_CN#rd)
 
-### Generative Adversarial Networks
+### 生成对抗网络
+- 2014-NIPS-Generative Adversarial Nets
+
+### 风格迁移
+- 2017-CVPR-Diversified Texture Synthesis with Feed-forward Networks [论文解读](https://mp.weixin.qq.com/s/HHRPCkPjqiGzgxdBBduA9A)
