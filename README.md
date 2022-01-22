@@ -8,6 +8,7 @@
 
 ### 生成对抗网络
 - 2014-NIPS-Generative Adversarial Nets [论文解读](https://mp.weixin.qq.com/s/b3IiLLYT6ko207l9D_NPCQ)
+- 2014-Conditional Generative Adversarial Nets [论文解读](https://mp.weixin.qq.com/s/VvbLkP2xeZ3pFGDRpwHtiQ)
 
 ### 风格迁移
 - 2017-CVPR-Diversified Texture Synthesis with Feed-forward Networks [论文解读](https://mp.weixin.qq.com/s/HHRPCkPjqiGzgxdBBduA9A)
