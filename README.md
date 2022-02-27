@@ -10,6 +10,7 @@
 - 2014-Generative Adversarial Nets [论文解读](https://mp.weixin.qq.com/s/b3IiLLYT6ko207l9D_NPCQ)
 - 2014-Conditional Generative Adversarial Nets [论文解读](https://mp.weixin.qq.com/s/VvbLkP2xeZ3pFGDRpwHtiQ)
 - 2016-Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks [论文解读](https://mp.weixin.qq.com/s/tzSHOHGqrRUnM5j3QO7ARQ)
+- 2016-InfoGAN: Interpretable Representation Learning by Infomation Maximizing Generative Adversarial Nets [论文解读](https://mp.weixin.qq.com/s/tSGiuFFhFOTbrXMUGT8NCA)
 - 2017-Conditional Image Synthesis with Auxiliary Classifier GANs [论文解读](https://mp.weixin.qq.com/s/wnL_g-Iu5cz6trHG1q8OaQ)
 
 ### 风格迁移
