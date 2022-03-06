@@ -12,6 +12,7 @@
 - 2016-Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks [论文解读](https://mp.weixin.qq.com/s/tzSHOHGqrRUnM5j3QO7ARQ)
 - 2016-InfoGAN: Interpretable Representation Learning by Infomation Maximizing Generative Adversarial Nets [论文解读](https://mp.weixin.qq.com/s/tSGiuFFhFOTbrXMUGT8NCA)
 - 2017-Conditional Image Synthesis with Auxiliary Classifier GANs [论文解读](https://mp.weixin.qq.com/s/wnL_g-Iu5cz6trHG1q8OaQ)
+- 2018-cGANs with Projection Discriminator [论文解读](https://mp.weixin.qq.com/s/MjfmrXh43sf7gkkE3y83HA)
 
 ### 风格迁移
 - 2017-Diversified Texture Synthesis with Feed-forward Networks [论文解读](https://mp.weixin.qq.com/s/HHRPCkPjqiGzgxdBBduA9A)
