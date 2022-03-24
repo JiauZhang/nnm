@@ -16,3 +16,4 @@
 
 ### 风格迁移
 - 2017-Diversified Texture Synthesis with Feed-forward Networks [论文解读](https://mp.weixin.qq.com/s/HHRPCkPjqiGzgxdBBduA9A)
+- 2021-AgileGAN：Stylizing Portraits by Inversion-Consistent Transfer Learning [论文解读](https://mp.weixin.qq.com/s/CtEJdStB5afHGuEt_BeYtw)
