@@ -17,4 +17,5 @@
 ### 风格迁移
 - 2017-Diversified Texture Synthesis with Feed-forward Networks [论文解读](https://mp.weixin.qq.com/s/HHRPCkPjqiGzgxdBBduA9A)
 - 2018-CartoonGAN: Generative Adversarial Networks for Photo Cartoonization [论文解读](https://mp.weixin.qq.com/s/TYx3j2mf5V8itI-3m75p0Q)
+- 2020-Resolution Dependent GAN Interpolation for Controllable Image Synthesis Between Domains [论文解读](https://mp.weixin.qq.com/s/9_KwBm3aJzdcnObLx6uGwg)
 - 2021-AgileGAN: Stylizing Portraits by Inversion-Consistent Transfer Learning [论文解读](https://mp.weixin.qq.com/s/CtEJdStB5afHGuEt_BeYtw)
