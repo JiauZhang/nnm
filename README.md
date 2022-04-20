@@ -13,6 +13,9 @@
 - 2016-InfoGAN: Interpretable Representation Learning by Infomation Maximizing Generative Adversarial Nets [论文解读](https://mp.weixin.qq.com/s/tSGiuFFhFOTbrXMUGT8NCA)
 - 2017-Conditional Image Synthesis with Auxiliary Classifier GANs [论文解读](https://mp.weixin.qq.com/s/wnL_g-Iu5cz6trHG1q8OaQ)
 - 2018-cGANs with Projection Discriminator [论文解读](https://mp.weixin.qq.com/s/MjfmrXh43sf7gkkE3y83HA)
+
+### StyleGAN
+- 2021-Encoding in Style：a StyleGAN Encoder for Image-to-Image Translation [论文解读](https://mp.weixin.qq.com/s/qj0EdHdJHnzo05XiQZ_7sA)
 - 2022-AE-StyleGAN：Improved Training of Style-Based Auto-Encoders [论文解读](https://mp.weixin.qq.com/s/4izPf1UhIvpq5UBS0Hk6-g)
 
 ### 风格迁移
