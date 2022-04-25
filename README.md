@@ -24,3 +24,4 @@
 - 2020-Resolution Dependent GAN Interpolation for Controllable Image Synthesis Between Domains [论文解读](https://mp.weixin.qq.com/s/9_KwBm3aJzdcnObLx6uGwg)
 - 2020-StarGAN v2：Diverse Image Synthesis for Multiple Domains [论文解读](https://mp.weixin.qq.com/s/JIr6INutY_0IBCMRZN1pvQ)
 - 2021-AgileGAN: Stylizing Portraits by Inversion-Consistent Transfer Learning [论文解读](https://mp.weixin.qq.com/s/CtEJdStB5afHGuEt_BeYtw)
+- 2021-BlendGAN：Implicitly GAN Blending for Arbitrary Stylized Face Generation [论文解读](https://mp.weixin.qq.com/s/1VLtSzeJE9o3yxZbyecl3w)
