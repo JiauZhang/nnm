@@ -2,6 +2,7 @@
 - 2017-Attention Is All You Need [论文解读](https://mp.weixin.qq.com/s/hZ47wqCO9Xivf3egGhM-SQ)
 - 2018-GPT-1-Improving Language Understanding by Generative Pre-Training [论文解读](https://mp.weixin.qq.com/s/OpbobhJbBe2hCGDpA3M0Zw)
 - 2022-FLIP: Scaling Language-Image Pre-training via Masking [论文解读](https://mp.weixin.qq.com/s/MWiSoR13BXYevUCAXcZCjg)
+- 2022-A-CLIP: Attentive Mask CLIP [论文解读](https://mp.weixin.qq.com/s/r8JTAMC3DxSXKIKY5IDE8A)
 
 ### 网络结构
 - [AlexNet、GoogLeNet](https://mp.weixin.qq.com/s?__biz=MzUzNjU2OTkyOA==&mid=2247484071&idx=2&sn=0c1e813d5565a21ed88c9c1459900678&chksm=faf57380cd82fa963ab4b4adeb4cd88f9f3c2c22e1ba25d4fabb592ec17919b982ee6accec59&token=2091525340&lang=zh_CN#rd)
