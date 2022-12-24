@@ -134,7 +134,8 @@ class GAN():
     def test(self):
         pass
 
-gan = GAN(steps=2000, batch_size=64, sample_intervel=100)
-gan.train()
-
-print('\nTraining GAN finished!\n')
+if __name__ == '__main__':
+    print('\nStart to train GAN...\n')
+    gan = GAN(steps=2000, batch_size=64, sample_intervel=100)
+    gan.train()
+    print('\nTraining GAN finished!\n')
