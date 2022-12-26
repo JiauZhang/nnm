@@ -1,8 +1,7 @@
 import torch, torchvision
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
-import numpy as np
-import cv2
+from torchvision.utils import save_image
 
 # https://github.com/cdoersch/vae_tutorial/blob/master/mnist_vae.prototxt
 class Encoder(nn.Module):
@@ -34,25 +33,30 @@ class Decoder(nn.Module):
 
         self.model = nn.Sequential(
             nn.Linear(input_dim, 128),
+            nn.ReLU(),
             nn.Linear(128, 256),
+            nn.ReLU(),
             nn.Linear(256, 256),
+            nn.ReLU(),
             nn.Linear(256, output_dim),
         )
 
     def forward(self, inputs):
-        return self.model(inputs)
+        return torch.sigmoid(self.model(inputs))
 
 class VAE():
-    def __init__(self, epoches=1000, batch_size=32, sample_interval=1):
-        self.encoder = Encoder(input_dim=28*28, output_dim=30)
-        self.decoder = Decoder(input_dim=30, output_dim=28*28)
+    def __init__(self, latent_dim=30, epoches=1000, batch_size=32, sample_interval=1):
+        self.encoder = Encoder(input_dim=28*28, output_dim=latent_dim)
+        self.decoder = Decoder(input_dim=latent_dim, output_dim=28*28)
 
+        self.latent_dim = latent_dim
         self.epoches = epoches
         self.batch_size = batch_size
         self.sample_interval = sample_interval
         self.optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
             {'params': self.decoder.parameters()}], lr=2e-4)
+        self.z = torch.randn((self.batch_size, self.latent_dim))
 
     def train(self):
         # load training dataset
@@ -69,11 +73,10 @@ class VAE():
                 z_mean, z_log_var, latent = self.encoder(images)
                 rec_images = self.decoder(latent)
 
-                rec_loss = torch.mean(torch.abs(rec_images - images))
+                rec_loss = nn.functional.binary_cross_entropy(rec_images, images, reduction='sum')
                 kl_loss = 1 + z_log_var * 2 - torch.square(z_mean) - torch.exp(z_log_var * 2)
-                kl_loss = torch.sum(kl_loss, axis=-1)
+                kl_loss = torch.sum(kl_loss)
                 kl_loss *= -0.5
-                kl_loss = torch.mean(kl_loss)
                 vae_loss = rec_loss + kl_loss
 
                 self.optimizer.zero_grad()
@@ -84,19 +87,15 @@ class VAE():
                     print(epoch, step, vae_loss.item())
 
             if epoch % self.sample_interval == 0:
-                rec_images = rec_images.detach().numpy().reshape(-1, 28, 28)
-                sample_row = 8
-                sample_col = 8
-                samples = np.zeros((sample_row * 28, sample_col * 28))
-                for r in range(sample_row):
-                    for c in range(sample_col):
-                        samples[r*28:(r+1)*28, c*28:(c+1)*28] = rec_images[r*sample_col+c]
-                sample_name = '{}.png'.format(step)
-                cv2.imwrite(sample_name, samples)
-
+                rec_images = rec_images.reshape(-1, 1, 28, 28)
+                save_image(rec_images, f'o-{epoch}.png')
+                images = images.view(-1, 1, 28, 28)
+                save_image(images, f'i-{epoch}.png')
+                fake_images = self.decoder(self.z).view(-1, 1, 28, 28)
+                save_image(fake_images, f'g-{epoch}.png')
 
 if __name__ == '__main__':
     print('\nStart to train VAE...\n')
-    vae = VAE(epoches=500, batch_size=64, sample_interval=1)
+    vae = VAE(epoches=50, batch_size=64, sample_interval=1)
     vae.train()
     print('\nTraining VAE finished!\n')
