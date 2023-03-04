@@ -90,4 +90,5 @@ class Diffusion(nn.Module):
         return torch.reshape(out, [bs] + ((len(x_shape) - 1) * [1]))
 
     def train(self):
-        t = np.random.uniform
+        t = np.random.randint(self.num_timesteps, size=(self.num_timesteps,))
+        
