@@ -63,6 +63,9 @@ sRGB图像的去噪使用的合成噪声大部分使用的都是加性高斯白�
 `light enhancement` `denoising` `RAW`  
 论文收集了一批低光照图像和对应的长曝光图像，网络输入是低光照有噪声图像，输出是三通道RGB图像。该方法的目的就是取代传统ISP的过程，作者发现使用libraw将GT图片从RAW转换成RGB时不做直方图均衡化得到的效果更好，但是图片亮度偏暗一些，此时再进行直方图均衡化效果更佳。输入图片会根据与GT曝光时间差异乘上[100,250,300]，即事先把噪声图提亮，然后给网络去噪，该网络的局限性就是需要人为去设定放大系数，因为实际使用时我们并没有GT的曝光时间信息。
 - Deep Retinex Decomposition for Low-Light Enhancement
+\[[Unofficial Code](https://github.com/aasharma90/RetinexNet_PyTorch)\]  
+`Retinex` `denoising` `light enhancement` `sRGB`  
+使用成对数据集训练分解网络，损失函数使用低光、正常光反射系数一致的损失以及组合重建输入图的损失，外加反射系数梯度加权的光照梯度正则。
 - Noise2Noise: Learning Image Restoration without Clean Data
 \[[Code](https://github.com/NVlabs/noise2noise)\]  
 `denoising`  
