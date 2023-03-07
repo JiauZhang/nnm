@@ -1,3 +1,6 @@
+### 2023
+- StyO: Stylize Your Face in Only One-Shot \[[论文解读](https://mp.weixin.qq.com/s/jgwUtHkuqeAvtUXmsHjRUw)\] \[[PDF](https://arxiv.org/pdf/2303.03231.pdf)\]
+
 ### 2022
 - VToonify: Controllable High-Resolution Portrait Video Style Transfer
 \[[Code](https://github.com/williamyang1991/VToonify)\]
