@@ -1,5 +1,6 @@
 ### 2023
-- StyO: Stylize Your Face in Only One-Shot \[[论文解读](https://mp.weixin.qq.com/s/jgwUtHkuqeAvtUXmsHjRUw)\] \[[PDF](https://arxiv.org/pdf/2303.03231.pdf)\]
+- StyO: Stylize Your Face in Only One-Shot \[[论文解读](https://mp.weixin.qq.com/s/jgwUtHkuqeAvtUXmsHjRUw)\] \[[PDF](https://arxiv.org/pdf/2303.03231.pdf)\]  
+使用200张左右的真人图+1张风格图+文本提示模板微调stable diffusion实现图像重建，此时模型就可以根据不同的文本模板配置输出与目标风格相关的图像了，增加真实人脸对应的文本模板的content attention map交换操作之后可以显著改善生成的风格图与输入图的相关性。
 
 ### 2022
 - VToonify: Controllable High-Resolution Portrait Video Style Transfer
@@ -19,8 +20,7 @@
 \[[Code](https://github.com/carolineec/informative-drawings)\]
 - JoJoGAN: One Shot Face Stylization
 \[[Code](https://github.com/mchong6/JoJoGAN)\]  
-首先把风格图投影到预训练模型中，此时得到了风格图对应真实图在Stylespace下的code；再通过mixing操作产生更加真实的人脸图像；
-此时就有了成对的数据：风格图-真实图，接下来微调预训练模型实现端到端的风格变换模型。
+首先使用e4e获取风格图对应的latent code，因为e4e是用真人训练的，所以得到的latent code生成的就是真人图，然后对分辨率较高的层的latent code进行随机的style mixing产生更多对应的真实人脸数据；此时就有了成对的数据：1张风格图-多张真实图，这也就是论文标题说的One Shot的意思，经过微调预训练模型后即可实现端到端的风格变换模型。
 
 ### 2021
 - BlendGAN：Implicitly GAN Blending for Arbitrary Stylized Face Generation
