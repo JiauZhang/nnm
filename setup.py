@@ -15,6 +15,7 @@ setup(
         'PyTorch',
     ],
     install_requires=[
+        'fakeset',
     ],
     classifiers=[
         'Intended Audience :: Developers',

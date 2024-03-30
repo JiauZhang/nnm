@@ -1,6 +1,5 @@
-import  matplotlib.pyplot as plt
-import numpy as np
-from sklearn.datasets import make_swiss_roll
+import matplotlib.pyplot as plt
+from fakeset.generator import make_swiss_roll
 import torch
 import torch.nn as nn
 
