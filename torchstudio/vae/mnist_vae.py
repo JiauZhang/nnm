@@ -23,9 +23,9 @@ class Encoder(nn.Module):
     def forward(self, inputs):
         output = self.model(inputs)
         z_mean = self.mu(output)
-        z_log_var = self.logsd(output)
+        z_log_std = self.logsd(output)
         epsilon = torch.randn_like(z_mean)
-        return z_mean, z_log_var, z_mean + torch.exp(0.5 * z_log_var) * epsilon
+        return z_mean, z_log_std, z_mean + torch.exp(z_log_std) * epsilon
 
 class Decoder(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -70,11 +70,11 @@ class VAE():
             for step, (images, _) in enumerate(train_data_iter):
                 images = images.reshape(self.batch_size, -1)
 
-                z_mean, z_log_var, latent = self.encoder(images)
+                z_mean, z_log_std, latent = self.encoder(images)
                 rec_images = self.decoder(latent)
 
                 rec_loss = nn.functional.binary_cross_entropy(rec_images, images, reduction='sum')
-                kl_loss = 1 + z_log_var * 2 - torch.square(z_mean) - torch.exp(z_log_var * 2)
+                kl_loss = 1 + z_log_std * 2 - torch.square(z_mean) - torch.exp(z_log_std * 2)
                 kl_loss = torch.sum(kl_loss)
                 kl_loss *= -0.5
                 vae_loss = rec_loss + kl_loss
