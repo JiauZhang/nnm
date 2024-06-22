@@ -1,0 +1,49 @@
+[build-system]
+requires = [
+    "build",
+    "setuptools >= 42",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torchstudio"
+dynamic = ["version"]
+description = "PyTorch Studio"
+readme = "README.md"
+authors = [
+    {name = "Jiau Zhang", email = "jiauzhang@163.com"},
+]
+classifiers = [
+    'Intended Audience :: Developers',
+    'Topic :: Scientific/Engineering :: Artificial Intelligence',
+    'License :: OSI Approved :: GNU General Public License v2 (GPLv2)',
+    'Programming Language :: Python :: 3.8',
+]
+keywords = [
+    'PyTorch',
+    'Deep Learning',
+    'Artificial Intelligence',
+]
+requires-python = ">= 3.8"
+dependencies = [
+    "numpy",
+    "torch",
+    'fakeset',
+]
+
+[project.urls]
+Homepage = "https://github.com/jiauzhang/torchstudio"
+
+[tool.setuptools]
+packages = ["torchstudio"]
+
+[tool.setuptools.dynamic]
+version = {attr = "torchstudio.__version__"}
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
