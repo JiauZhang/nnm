@@ -1,10 +1,18 @@
-import torchvision
-from torch.utils.data.dataloader import DataLoader
+from torchvision import (
+    datasets as _D,
+    transformers as _T,
+)
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-def get_dataloader(batch_size)
-    mnist = torchvision.datasets.MNIST(
-        root='.', train=True, download=True, transform=torchvision.transforms.Compose([
-        torchvision.transforms.ToTensor(),
-    ]))
-    train_loader = DataLoader(mnist, batch_size=batch_size, shuffle=True, drop_last=True)
-    return train_loader
+class MNISTDataset(_D.MNIST):
+    def __init__(
+        self, root: Union[str, Path], train: bool = True,
+        transform: Optional[Callable] = _T.Compose([_T.ToTensor()]),
+        target_transform: Optional[Callable] = None,
+        download: bool = True,
+    ) -> None:
+        super().__init__(
+            root, train=train, transform=transform,
+            target_transform=target_transform, download=download,
+        )

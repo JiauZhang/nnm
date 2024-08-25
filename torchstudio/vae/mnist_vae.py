@@ -1,7 +1,8 @@
-import torch, torchvision
+import torch
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
 from torchvision.utils import save_image
+from torchstudio.dataset.mnist import MNISTDataset
 
 # https://github.com/cdoersch/vae_tutorial/blob/master/mnist_vae.prototxt
 class Encoder(nn.Module):
@@ -59,11 +60,7 @@ class VAE():
         self.z = torch.randn((self.batch_size, self.latent_dim))
 
     def train(self):
-        # load training dataset
-        mnist = torchvision.datasets.MNIST(
-            root='.', train=True, download=True, transform=torchvision.transforms.Compose([
-            torchvision.transforms.ToTensor(),
-        ]))
+        mnist = MNISTDataset(root='.')
         train_loader = DataLoader(mnist, batch_size=self.batch_size, shuffle=True, drop_last=True)
         for epoch in range(self.epoches):
             train_data_iter = iter(train_loader)
