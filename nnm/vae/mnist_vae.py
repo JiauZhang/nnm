@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
 from torchvision.utils import save_image
-from torchstudio.dataset.mnist import MNISTDataset
+from nnm.dataset.mnist import MNISTDataset
 
 # https://github.com/cdoersch/vae_tutorial/blob/master/mnist_vae.prototxt
 class Encoder(nn.Module):

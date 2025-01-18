@@ -7,9 +7,9 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "torchstudio"
+name = "nnm"
 dynamic = ["version"]
-description = "PyTorch Studio"
+description = "Neural Network Models"
 readme = "README.md"
 authors = [
     {name = "Jiau Zhang", email = "jiauzhang@163.com"},
@@ -33,13 +33,13 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jiauzhang/torchstudio"
+Homepage = "https://github.com/jiauzhang/nnm"
 
 [tool.setuptools]
-packages = ["torchstudio"]
+packages = ["nnm"]
 
 [tool.setuptools.dynamic]
-version = {attr = "torchstudio.__version__"}
+version = {attr = "nnm.__version__"}
 
 [tool.pytest.ini_options]
 minversion = "8.0"
