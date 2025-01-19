@@ -36,7 +36,7 @@ dependencies = [
 Homepage = "https://github.com/jiauzhang/nnm"
 
 [tool.setuptools]
-packages = ["nnm"]
+package-dir = {"" = "."}
 
 [tool.setuptools.dynamic]
 version = {attr = "nnm.__version__"}
