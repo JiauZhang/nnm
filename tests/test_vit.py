@@ -17,3 +17,11 @@ def test_unpatchify():
     patch = hidden_state[:, 22]
     feature_patch = feature[:, :, 16:24, 48:56].reshape(4, -1)
     assert bool((feature_patch == patch).all())
+
+def test_patch_embed():
+    image = torch.randn(4, 3, 256, 128)
+    patch_embed = vit.PatchEmbed(kernel_size=7, stride=4, in_channels=3, embed_dim=16, padding=3)
+    embeds, size = patch_embed(image)
+    h, w = 256 // 4, 128 // 4
+    assert size == (h, w)
+    assert list(embeds.shape) == [4, h * w, 16]

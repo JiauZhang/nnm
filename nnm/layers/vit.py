@@ -17,16 +17,14 @@ def unpatchify(input, output_size, patch_size, dilation=1, padding=0, stride=Non
     return output
 
 class PatchEmbed(nn.Module):
-    def __init__(self, patch_size, stride, in_channels, embed_dim, padding=0):
-        self.patch_size = patch_size
-        self.in_channels = in_channels
-        self.embed_dim = embed_dim
-        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=stride, padding=padding)
+    def __init__(self, *, kernel_size, stride, in_channels, embed_dim, padding=0):
+        super().__init__()
+        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding)
         self.norm = nn.LayerNorm(embed_dim)
 
     def forward(self, input):
         output = self.proj(input)
-        N, C, H, W = output.shape[:2]
+        N, C, H, W = output.shape
         output = output.reshape(N, C, -1).permute(0, 2, 1)
         output = self.norm(output)
         return output, (H, W)
