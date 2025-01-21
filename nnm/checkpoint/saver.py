@@ -20,5 +20,14 @@ class Saver():
         save_path = os.path.join(self.save_dir, 'checkpoint')
         if prefix: save_path += f'-{prefix}'
         save_path += f'-{self.save_count:06d}.pth'
+        self.file_lock.append(save_path)
+
+        diff = len(self.file_lock) - self.max_to_keep
+        if diff > 0:
+            for i in range(diff): os.remove(self.file_lock[i])
+            self.file_lock = self.file_lock[diff:]
+
+        json.write(self.file_lock_path, self.file_lock)
+
         torch.save(self.model.state_dict(), save_path)
         return save_path
