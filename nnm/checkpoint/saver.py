@@ -1,5 +1,5 @@
 import os, torch
-from conippets import json
+from conippets import json, path as P
 
 class Saver():
     def __init__(self, save_dir, model, max_to_keep=5):
@@ -24,7 +24,7 @@ class Saver():
 
         diff = len(self.file_lock) - self.max_to_keep
         if diff > 0:
-            for i in range(diff): os.remove(self.file_lock[i])
+            for i in range(diff): P.rm(self.file_lock[i])
             self.file_lock = self.file_lock[diff:]
 
         json.write(self.file_lock_path, self.file_lock)

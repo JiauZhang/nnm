@@ -30,14 +30,14 @@ dependencies = [
     "numpy",
     "torch",
     'fakeset',
-    'conippets',
+    'conippets >= 0.1.1',
 ]
 
 [project.urls]
 Homepage = "https://github.com/jiauzhang/nnm"
 
 [tool.setuptools]
-package-dir = {"" = "."}
+package-dir = {"nnm" = "nnm"}
 
 [tool.setuptools.dynamic]
 version = {attr = "nnm.__version__"}
