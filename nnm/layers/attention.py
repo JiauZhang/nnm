@@ -29,13 +29,15 @@ class ChannelAttention(nn.Module):
 def window_partition(x, window_size: int):
     B, H, W, C = x.shape
     x = x.reshape(B, H // window_size, window_size, W // window_size, window_size, C)
-    windows = x.permute(0, 1, 3, 2, 4, 5).reshape(-1, window_size, window_size, C)
+    # [B, H//w, w, W//w, w, C] --> [B, H//w, W//w, w, w, C] --> [-1, w * w, C]
+    windows = x.permute(0, 1, 3, 2, 4, 5).reshape(-1, window_size * window_size, C)
     return windows
 
-def window_reverse(windows, batch_size: int, window_size: int, H: int, W: int):
-    B = batch_size
-    x = windows.reshape(B, H // window_size, W // window_size, window_size, window_size, -1)
-    x = x.permute(0, 1, 3, 2, 4, 5).reshape(B, H, W, -1)
+def window_reverse(windows, window_size: int, output_size):
+    B, H, W, C = output_size
+    x = x.reshape(-1, window_size, window_size, C)
+    x = windows.reshape(B, H // window_size, W // window_size, window_size, window_size, C)
+    x = x.permute(0, 1, 3, 2, 4, 5).reshape(B, H, W, C)
     return x
 
 class WindowAttention(nn.Module):
@@ -61,7 +63,6 @@ class WindowAttention(nn.Module):
         _, Hp, Wp, _ = x.shape
 
         x = window_partition(x, self.window_size)
-        x = x.reshape(-1, self.window_size * self.window_size, C)
 
         B_, L, C = x.shape
         qkv = self.qkv(x).reshape(B_, L, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
@@ -74,11 +75,10 @@ class WindowAttention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B_, L, C)
         x = self.proj(x)
 
-        x = x.reshape(-1, self.window_size, self.window_size, C)
-        x = window_reverse(x, B, self.window_size, Hp, Wp)
+        x = window_reverse(x, self.window_size, (B, Hp, Wp, C))
 
         if pad_r > 0 or pad_b > 0:
-            x = x[:, :H, :W, :].contiguous()
+            x = x[:, :H, :W, :]
 
         x = x.reshape(B, H * W, C)
 
