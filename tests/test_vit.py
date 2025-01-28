@@ -18,10 +18,19 @@ def test_unpatchify():
     feature_patch = feature[:, :, 16:24, 48:56].reshape(4, -1)
     assert bool((feature_patch == patch).all())
 
-def test_patch_embed():
+def test_patch_embed_2d():
     image = torch.randn(4, 3, 256, 128)
-    patch_embed = vit.PatchEmbed(kernel_size=7, stride=4, in_channels=3, embed_dim=16, padding=3)
+    patch_embed = vit.PatchEmbed2D(kernel_size=7, stride=4, in_channels=3, embed_dim=16, padding=3)
     embeds, size = patch_embed(image)
     h, w = 256 // 4, 128 // 4
     assert size == (h, w)
     assert list(embeds.shape) == [4, h * w, 16]
+
+def test_patch_embed_3d():
+    N, C, D, H, W = 4, 3, 8, 128, 128
+    images = torch.randn(N, C, D, H, W)
+    patch_embed = vit.PatchEmbed3D(kernel_size=(D, 16, 16), in_channels=C, embed_dim=16)
+    embeds, size = patch_embed(images)
+    d, h, w = 1, 128 // 16, 128 // 16
+    assert size == (d, h, w)
+    assert list(embeds.shape) == [4, d * h * w, 16]

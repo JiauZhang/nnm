@@ -35,8 +35,8 @@ def window_partition(x, window_size: int):
 
 def window_reverse(windows, window_size: int, output_size):
     B, H, W, C = output_size
-    x = x.reshape(-1, window_size, window_size, C)
-    x = windows.reshape(B, H // window_size, W // window_size, window_size, window_size, C)
+    x = windows.reshape(-1, window_size, window_size, C)
+    x = x.reshape(B, H // window_size, W // window_size, window_size, window_size, C)
     x = x.permute(0, 1, 3, 2, 4, 5).reshape(B, H, W, C)
     return x
 
