@@ -1,9 +1,10 @@
 import torch
 
 class EMA():
-    def __init__(self, model, decay=0.999):
+    def __init__(self, model, device='cpu', decay=0.999):
         self.model = model
         self.decay = decay
+        self.device = device
         self.shadow_state_dict = {}
         self.load_state_dict(self.model.state_dict())
 
@@ -11,10 +12,7 @@ class EMA():
     def load_state_dict(self, state_dict):
         self.shadow_state_dict = {}
         for k, v in state_dict.items():
-            if v.requires_grad:
-                self.shadow_state_dict[k] = v.detach().clone()
-            else:
-                self.shadow_state_dict[k] = v
+            self.shadow_state_dict[k] = v.detach().clone().to(self.device)
 
     def state_dict(self):
         return self.shadow_state_dict
@@ -22,7 +20,6 @@ class EMA():
     @torch.no_grad()
     def update(self):
         for k, v in self.model.state_dict().items():
-            if v.requires_grad:
-                self.shadow_state_dict[k] = torch.lerp(v, self.shadow_state_dict[k], self.decay)
-            else:
-                self.shadow_state_dict[k] = v
+            v_ = v.detach().to(self.device)
+            v_ = torch.lerp(v_, self.shadow_state_dict[k], self.decay)
+            self.shadow_state_dict[k] = v_
