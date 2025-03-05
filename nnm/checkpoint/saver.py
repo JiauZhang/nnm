@@ -23,7 +23,7 @@ class Saver():
         self.file_lock.append(save_path)
 
         diff = len(self.file_lock) - self.max_to_keep
-        for i in range(diff): P.rm(self.file_lock[i])
+        for i in range(diff): P.rm(self.file_lock[i], missing_ok=True)
         if diff > 0: self.file_lock = self.file_lock[diff:]
 
         torch.save(self.model.state_dict(), save_path)
@@ -48,6 +48,9 @@ class BestSaver():
                 heapq.heappush(self.file_lock, (fl['score'], fl))
 
     def save(self, score, prefix=None):
+        if len(self.file_lock) >= self.max_to_keep and score <= self.file_lock[0][0]:
+            return
+
         self.save_count += 1
         save_path = os.path.join(self.save_dir, 'checkpoint')
         if prefix: save_path += f'-{prefix}'
@@ -57,7 +60,7 @@ class BestSaver():
         diff = len(self.file_lock) - self.max_to_keep
         for _ in range(diff):
             _, fl = heapq.heappop(self.file_lock)
-            P.rm(fl['fn'])
+            P.rm(fl['fn'], missing_ok=True)
 
         torch.save(self.model.state_dict(), save_path)
         json.write(self.file_lock_path, [fl for _, fl in self.file_lock])
