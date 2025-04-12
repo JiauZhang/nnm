@@ -1,0 +1,29 @@
+import torch
+from torch import nn
+
+class RoPE(nn.Module):
+    def __init__(self, *, max_seq_len, embed_dim, base=10000):
+        super().__init__()
+        assert (embed_dim % 2) == 0, 'embed_dim must be divided by 2'
+        self.max_seq_len = max_seq_len
+        self.embed_dim = embed_dim
+        self.base = base
+        theta = 1.0 / (base ** (torch.arange(0, embed_dim, 2, dtype=torch.float64) / embed_dim))
+        theta = theta.reshape(-1, 1).repeat(1, 2).reshape(-1)
+        m = torch.arange(max_seq_len, device=theta.device, dtype=torch.float64)
+        m_theta = torch.outer(m, theta)
+        self.cos = torch.cos(m_theta).to(dtype=torch.float32)
+        # [-1, 1, -1, 1, ...]
+        m_theta = (m_theta.reshape(-1, 2) * torch.tensor([-1, 1], dtype=torch.float64)).reshape(
+            max_seq_len, embed_dim
+        )
+        self.sin = torch.sin(m_theta).to(dtype=torch.float32)
+
+    def forward(self, x):
+        # [..., seq_len, embed_dim]
+        shape = x.shape
+        assert shape[-1] == self.embed_dim
+        sin_pe = self.sin[:shape[-2]]
+        cos_pe = self.cos[:shape[-2]]
+        y = x * cos_pe + x.reshape(-1, 2).flip(dims=[-1]).reshape(shape) * sin_pe
+        return y
