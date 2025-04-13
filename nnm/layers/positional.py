@@ -23,7 +23,7 @@ class RoPE(nn.Module):
         )
         self.sin = torch.sin(m_theta).to(dtype=torch.float32)
 
-    def forward(self, x):
+    def forward(self, x, cache=False, position=None):
         # [..., seq_len, embed_dim]
         shape = x.shape
         assert shape[-1] == self.embed_dim
@@ -43,7 +43,7 @@ class QwenRoPE(RoPE):
         self.sin = torch.sin(m_theta).to(dtype=torch.float32).repeat(1, 2)
         self.cos = torch.cos(m_theta).to(dtype=torch.float32).repeat(1, 2)
 
-    def forward(self, x):
+    def forward(self, x, cache=False, position=None):
         shape = x.shape
         half_embed_dim = shape[-1] // 2
         x1 = x[..., :half_embed_dim]
