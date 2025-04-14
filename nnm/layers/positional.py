@@ -23,12 +23,21 @@ class RoPE(nn.Module):
         )
         self.sin = torch.sin(m_theta).to(dtype=torch.float32)
 
+    def seq_idx(self, cache, position, seq_len):
+        if cache:
+            assert position is not None
+            seq_idx = torch.arange(position, position + seq_len)
+        else:
+            seq_idx = torch.arange(seq_len)
+        return seq_idx
+
     def forward(self, x, cache=False, position=None):
         # [..., seq_len, embed_dim]
         shape = x.shape
         assert shape[-1] == self.embed_dim
-        sin_pe = self.sin[:shape[-2]]
-        cos_pe = self.cos[:shape[-2]]
+        seq_idx = self.seq_idx(cache, position, shape[-2])
+        sin_pe = self.sin[seq_idx, :]
+        cos_pe = self.cos[seq_idx, :]
         y = x * cos_pe + x.reshape(-1, 2).flip(dims=[-1]).reshape(shape) * sin_pe
         return y
 
@@ -40,16 +49,20 @@ class QwenRoPE(RoPE):
         # [max_seq_len, embed_dim // 2]
         m_theta = torch.outer(m, theta)
         # [max_seq_len, embed_dim]
-        self.sin = torch.sin(m_theta).to(dtype=torch.float32).repeat(1, 2)
+        self.sin = torch.sin(torch.cat([-m_theta, m_theta], dim=-1)).to(dtype=torch.float32)
         self.cos = torch.cos(m_theta).to(dtype=torch.float32).repeat(1, 2)
 
     def forward(self, x, cache=False, position=None):
         shape = x.shape
+        assert shape[-1] == self.embed_dim
+        seq_idx = self.seq_idx(cache, position, shape[-2])
+        sin_pe = self.sin[seq_idx, :]
+        cos_pe = self.cos[seq_idx, :]
         half_embed_dim = shape[-1] // 2
         x1 = x[..., :half_embed_dim]
         x2 = x[..., half_embed_dim:]
-        y = torch.cat((-x2, x1), dim=-1)
-        sin_pe = self.sin[:shape[-2]]
-        cos_pe = self.cos[:shape[-2]]
+        y = torch.cat((x2, x1), dim=-1)
+        sin_pe = self.sin[seq_idx, :]
+        cos_pe = self.cos[seq_idx, :]
         y = (x * cos_pe) + (y * sin_pe)
         return y

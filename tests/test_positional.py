@@ -24,14 +24,14 @@ def llama_apply_rotary_emb(xq, freqs_cis):
     return xq_out.type_as(xq)
 
 @pytest.mark.parametrize(
-    'seq_len, embed_dim, max_seq_len, base', [
-        (256, 32, 1024, 6666),
-        (128, 64, 1024, 10000),
-        (512, 64, 1024, 10000),
-        (999, 64, 1024, 10000),
+    'seq_len, embed_dim, max_seq_len, base, cache, position', [
+        (256, 32, 1024, 6666, False, None),
+        (128, 64, 1024, 10000, False, None),
+        (512, 64, 1024, 10000, True, 32),
+        (999, 64, 1024, 10000, True, 66),
     ]
 )
-def test_rope(seq_len, embed_dim, max_seq_len, base):
+def test_rope(seq_len, embed_dim, max_seq_len, base, cache, position):
     rope = RoPE(max_seq_len=max_seq_len, embed_dim=embed_dim, base=base)
     x = torch.randn(1, seq_len, embed_dim)
     y = rope(x)
@@ -77,19 +77,20 @@ def qwen2_apply_rotary_pos_emb(q, cos, sin, position_ids=None, unsqueeze_dim=1):
     return q_embed
 
 @pytest.mark.parametrize(
-    'seq_len, embed_dim, max_seq_len, base', [
-        (256, 32, 1024, 6666),
-        (128, 64, 1024, 8888),
-        (512, 64, 1024, 8888),
-        (888, 64, 1024, 8888),
+    'seq_len, embed_dim, max_seq_len, base, cache, position', [
+        (256, 32, 1024, 6666, False, None),
+        (128, 64, 1024, 8888, False, None),
+        (512, 64, 1024, 8888, True, 32),
+        (888, 64, 1024, 8888, True, 111),
     ]
 )
-def test_qwen2_rope(seq_len, embed_dim, max_seq_len, base):
+def test_qwen2_rope(seq_len, embed_dim, max_seq_len, base, cache, position):
     rope = QwenRoPE(max_seq_len=max_seq_len, embed_dim=embed_dim, base=base)
     x = torch.randn(1, seq_len, embed_dim)
-    y = rope(x)
+    y = rope(x, cache=cache, position=position)
     rotary_emb = Qwen2RotaryEmbedding(base, embed_dim)
-    position_ids = torch.arange(x.shape[-2]).reshape(1, -1)
+    if position is None: position = 0
+    position_ids = torch.arange(position, position + x.shape[-2]).reshape(1, -1)
     position_embeddings = rotary_emb(x, position_ids)
     cos, sin = position_embeddings
     qwen2_y = qwen2_apply_rotary_pos_emb(x, cos, sin).squeeze(dim=1)
