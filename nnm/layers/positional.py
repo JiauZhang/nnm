@@ -49,7 +49,8 @@ class QwenRoPE(RoPE):
         # [max_seq_len, embed_dim // 2]
         m_theta = torch.outer(m, theta)
         # [max_seq_len, embed_dim]
-        self.sin = torch.sin(torch.cat([-m_theta, m_theta], dim=-1)).to(dtype=torch.float32)
+        sin_m_theta = torch.sin(m_theta)
+        self.sin = torch.cat([-sin_m_theta, sin_m_theta], dim=-1).to(dtype=torch.float32)
         self.cos = torch.cos(m_theta).to(dtype=torch.float32).repeat(1, 2)
 
     def forward(self, x, cache=False, position=None):
@@ -62,7 +63,5 @@ class QwenRoPE(RoPE):
         x1 = x[..., :half_embed_dim]
         x2 = x[..., half_embed_dim:]
         y = torch.cat((x2, x1), dim=-1)
-        sin_pe = self.sin[seq_idx, :]
-        cos_pe = self.cos[seq_idx, :]
         y = (x * cos_pe) + (y * sin_pe)
         return y
