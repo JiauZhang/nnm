@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-class RWKVChannelMix(nn.Module):
+class ChannelMix(nn.Module):
     def __init__(self, embed_dim):
         super().__init__()
         self.embed_dim = embed_dim
@@ -31,7 +31,7 @@ class RWKVChannelMix(nn.Module):
         rkv = self.receptance(xr).sigmoid() * kv
         return rkv
 
-class RWKVTimeMix(nn.Module):
+class TimeMix(nn.Module):
     def __init__(self, embed_dim):
         super().__init__()
         self.embed_dim = embed_dim

@@ -25,7 +25,6 @@ class RoPE(nn.Module):
 
     def seq_idx(self, cache, position, seq_len):
         if cache:
-            assert position is not None
             seq_idx = torch.arange(position, position + seq_len)
         else:
             seq_idx = torch.arange(seq_len)
