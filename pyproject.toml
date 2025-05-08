@@ -1,7 +1,7 @@
 [build-system]
 requires = [
     "build",
-    "setuptools >= 42",
+    "setuptools>=42",
     "wheel",
 ]
 build-backend = "setuptools.build_meta"
@@ -25,12 +25,12 @@ keywords = [
     'Deep Learning',
     'Artificial Intelligence',
 ]
-requires-python = ">= 3.8"
+requires-python = ">=3.8"
 dependencies = [
     "numpy",
     "torch",
     'fakeset',
-    'conippets >= 0.1.1',
+    'conippets>=0.1.1',
 ]
 
 [project.urls]
@@ -41,6 +41,12 @@ package-dir = {"nnm" = "nnm"}
 
 [tool.setuptools.dynamic]
 version = {attr = "nnm.__version__"}
+
+[project.optional-dependencies]
+dev = [
+    "transformers==4.51.3",
+    "pytest==8.3.4",
+]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

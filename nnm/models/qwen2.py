@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from nnm.layers.positional import QwenRoPE
+from nnm.layers.rope import QwenRoPE
 
 class Qwen2MLP(nn.Module):
     def __init__(self, *, embed_dim, intermediate_size):
@@ -38,18 +38,20 @@ class Qwen2Attention(nn.Module):
     def forward(self, x, cache=False, position=None):
         batch, seq_len = x.shape[:-1]
 
-        q = self.q_proj(x) * self.scale
+        q = self.q_proj(x)
         k, v = self.kv_proj(x).split(self.num_kv_heads * self.head_dim, dim=-1)
-        q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim).transpose(1, 2)
-        k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        self.q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim).transpose(1, 2)
+        self.k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        self.v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.v
 
-        q = self.position_encoder(q, cache=cache, position=position)
-        k = self.position_encoder(k, cache=cache, position=position)
+        q = self.position_encoder(self.q, cache=cache, position=position)
+        k = self.position_encoder(self.k, cache=cache, position=position)
 
         k = expand_kv_heads(k, self.num_kv_groups)
         v = expand_kv_heads(v, self.num_kv_groups)
-        self.attn_weight = (q @ k.transpose(2, 3)).softmax(dim=-1)
+        self.attn_weight = (q @ k.transpose(2, 3) * self.scale).softmax(dim=-1)
+        o = self.attn_weight @ v
         o = self.o_proj(o.transpose(1, 2).reshape(batch, seq_len, self.embed_dim))
         return o
 

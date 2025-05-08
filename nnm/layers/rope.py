@@ -49,6 +49,8 @@ class QwenRoPE(RoPE):
         m_theta = torch.outer(m, theta)
         # [max_seq_len, embed_dim]
         sin_m_theta = torch.sin(m_theta)
+        # pre-negative sin embeds
+        # [-x2, x1] * [sin_m_theta, sin_m_theta] --> [x2, x1] * [-sin_m_theta, sin_m_theta]
         self.sin = torch.cat([-sin_m_theta, sin_m_theta], dim=-1).to(dtype=torch.float32)
         self.cos = torch.cos(m_theta).to(dtype=torch.float32).repeat(1, 2)
 
