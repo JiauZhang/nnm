@@ -40,18 +40,17 @@ class Qwen2Attention(nn.Module):
 
         q = self.q_proj(x)
         k, v = self.kv_proj(x).split(self.num_kv_heads * self.head_dim, dim=-1)
-        self.q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim).transpose(1, 2)
-        self.k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        self.v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = self.v
+        q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim).transpose(1, 2)
+        k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        q = self.position_encoder(self.q, cache=cache, position=position)
-        k = self.position_encoder(self.k, cache=cache, position=position)
+        q = self.position_encoder(q, cache=cache, position=position)
+        k = self.position_encoder(k, cache=cache, position=position)
 
         k = expand_kv_heads(k, self.num_kv_groups)
         v = expand_kv_heads(v, self.num_kv_groups)
-        self.attn_weight = (q @ k.transpose(2, 3) * self.scale).softmax(dim=-1)
-        o = self.attn_weight @ v
+        attn_weight = (q @ k.transpose(2, 3) * self.scale).softmax(dim=-1)
+        o = attn_weight @ v
         o = self.o_proj(o.transpose(1, 2).reshape(batch, seq_len, self.embed_dim))
         return o
 

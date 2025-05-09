@@ -61,7 +61,7 @@ def test_qwen2_rope_embedding(seq_len, embed_dim, max_seq_len, base):
     nnm_sin[:, :(embed_dim//2)] = -nnm_sin[:, :(embed_dim//2)]
 
     config = cfg.Qwen2Config(
-        hidden_size=embed_dim, num_attention_heads=1, num_key_value_heads=1,
+        head_dim=embed_dim,
         rope_theta=base, max_position_embeddings=max_seq_len,
     )
     hf_rope = qwen2.Qwen2RotaryEmbedding(config=config)
@@ -88,7 +88,7 @@ def test_qwen2_apply_rope(seq_len, embed_dim, max_seq_len, base):
     nnm_y = rope(x)
 
     config = cfg.Qwen2Config(
-        hidden_size=embed_dim, num_attention_heads=1, num_key_value_heads=1,
+        head_dim=embed_dim,
         rope_theta=base, max_position_embeddings=max_seq_len,
     )
     hf_rope = qwen2.Qwen2RotaryEmbedding(config=config)
