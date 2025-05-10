@@ -1,4 +1,4 @@
-import torch
+import math, torch
 from torch import nn
 
 class RoPE(nn.Module):
@@ -66,3 +66,48 @@ class QwenRoPE(RoPE):
         y = torch.cat((x2, x1), dim=-1)
         y = (x * cos_pe) + (y * sin_pe)
         return y
+
+# inverse embed_dim based on eq. (17)
+def find_correction_dim(num_rotations, embed_dim, base=10000, max_seq_len=2048):
+    return (embed_dim * math.log(max_seq_len/(num_rotations * 2 * math.pi)))/(2 * math.log(base))
+
+def find_correction_range(low_rot, high_rot, embed_dim, base=10000, max_seq_len=2048):
+    low = math.floor(find_correction_dim(low_rot, embed_dim, base, max_seq_len))
+    high = math.ceil(find_correction_dim(high_rot, embed_dim, base, max_seq_len))
+    return max(low, 0), min(high, embed_dim-1)  # Clamp values just in case
+
+def linear_ramp_mask(min, max, embed_dim):
+    if min == max: max += 0.001
+    linear_func = (torch.arange(embed_dim, dtype=torch.float32) - min) / (max - min)
+    ramp_func = torch.clamp(linear_func, 0, 1)
+    return ramp_func
+
+def get_mscale(scale=1):
+    if scale <= 1:
+        return 1.0
+    return 0.1 * math.log(scale) + 1.0
+
+class YaRN(nn.Module):
+    def __init__(self, *, max_seq_len, embed_dim, base=10000, scale=1, aplha=1, beta=32, temperature=1):
+        super().__init__()
+        assert (embed_dim % 2) == 0, 'embed_dim must be divided by 2'
+        self.max_seq_len = max_seq_len
+        self.embed_dim = embed_dim
+        self.base = base
+        self.scale = scale
+        self.alpha = aplha
+        self.beta = beta
+        self.temperature = temperature
+        self.precompute()
+
+    @torch.no_grad()
+    def precompute(self):
+        pos_freqs = self.base ** (torch.arange(0, self.embed_dim, 2).float() / self.embed_dim)
+        inv_freq_extrapolation = 1.0 / pos_freqs
+        inv_freq_interpolation = 1.0 / (self.scale * pos_freqs)
+
+        low, high = find_correction_range(self.beta, self.alpha, self.embed_dim, self.base, self.max_seq_len)
+        # n-d rotational scaling corrected for extrapolation
+        inv_freq_mask = (1 - linear_ramp_mask(low, high, self.embed_dim // 2).float()) * self.extrapolation_factor
+        self.inv_freq = inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
+        self.mscale = float(get_mscale(self.scale) * self.attn_factor)
