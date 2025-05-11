@@ -30,7 +30,7 @@ dependencies = [
     "numpy",
     "torch",
     'fakeset',
-    'conippets>=0.1.1',
+    'conippets==0.1.8',
 ]
 
 [project.urls]

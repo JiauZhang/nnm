@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from nnm.layers.rope import QwenRoPE
+from nnm.layers.norm import Qwen2RMSNorm
 
 class Qwen2MLP(nn.Module):
     def __init__(self, *, embed_dim, intermediate_size):
@@ -35,7 +36,7 @@ class Qwen2Attention(nn.Module):
         self.kv_proj = nn.Linear(embed_dim, 2 * num_kv_heads * self.head_dim, bias=True)
         self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
-    def forward(self, x, cache=False, position=None):
+    def forward(self, x, cache=False, position=None, attn_mask=None):
         batch, seq_len = x.shape[:-1]
 
         q = self.q_proj(x)
@@ -55,9 +56,31 @@ class Qwen2Attention(nn.Module):
         return o
 
 class Qwen2DecoderLayer(nn.Module):
-    def __init__(self, *, embed_dim):
+    def __init__(
+        self, *, position_encoder,
+        embed_dim=896, intermediate_size=4864, num_attn_heads=14, num_kv_heads=2, eps=1e-06,
+    ):
         super().__init__()
         self.embed_dim = embed_dim
+        self.position_encoder = position_encoder
+        self.attn = Qwen2Attention(
+            embed_dim=embed_dim, num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads,
+            position_encoder=position_encoder,
+        )
+        self.mlp = Qwen2MLP(embed_dim=embed_dim, intermediate_size=intermediate_size)
+        self.norm_1 = Qwen2RMSNorm(embed_dim=embed_dim, eps=eps)
+        self.norm_2 = Qwen2RMSNorm(embed_dim=embed_dim, eps=eps)
+
+    def forward(self, x, attn_mask):
+        y = self.norm_1(x)
+        y = self.attn(y, attn_mask=attn_mask)
+        x += y
+
+        y = self.norm_2(x)
+        y = self.mlp(y)
+        x += y
+
+        return x
 
 class Qwen2Model(nn.Module):
     def __init__(self, *, vocab_size, embed_dim):
