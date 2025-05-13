@@ -74,11 +74,11 @@ class Qwen2DecoderLayer(nn.Module):
     def forward(self, x, attn_mask):
         y = self.norm_1(x)
         y = self.attn(y, attn_mask=attn_mask)
-        x += y
+        x = x + y
 
         y = self.norm_2(x)
         y = self.mlp(y)
-        x += y
+        x = x + y
 
         return x
 

@@ -131,10 +131,12 @@ def test_qwen2_decoder_layer(batch, seq_len, max_seq_len, embed_dim, intermediat
     config = cfg.Qwen2Config(
         hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu",
         num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads,
-        rms_norm_eps=eps, head_dim=head_dim,
+        rms_norm_eps=eps, head_dim=head_dim, rope_theta=base,
     )
     hf_rope = qwen2.Qwen2RotaryEmbedding(config)
     hf_decoder = qwen2.Qwen2DecoderLayer(config, 0)
+    # hf Qwen2Attention has attention dropout
+    hf_decoder.eval()
 
     init_mlp_weight(nnm_decoder.mlp, hf_decoder.mlp)
     init_linear_weight(nnm_decoder.norm_1, hf_decoder.input_layernorm, bias=False)
@@ -147,3 +149,11 @@ def test_qwen2_decoder_layer(batch, seq_len, max_seq_len, embed_dim, intermediat
     init_kv_linear_weight(hf_attn.v_proj, nnm_attn.kv_proj.weight[kv_embed_dim:, :], nnm_attn.kv_proj.bias[kv_embed_dim:])
 
     x = torch.randn(batch, seq_len, embed_dim)
+    position_ids = torch.arange(seq_len).unsqueeze(0)
+    hf_cos, hf_sin = hf_rope(x, position_ids)
+    attn_mask = None
+
+    nnm_o = nnm_decoder(x, attn_mask=attn_mask)
+    hf_o = hf_decoder(x, position_embeddings=(hf_cos, hf_sin), attention_mask=attn_mask)[0]
+    assert nnm_o.shape == hf_o.shape
+    assert torch.abs(nnm_o - hf_o).mean() < 1e-5
