@@ -30,7 +30,7 @@ dependencies = [
     "numpy",
     "torch",
     'fakeset',
-    'conippets==0.1.8',
+    'conippets>=0.1.8',
 ]
 
 [project.urls]
@@ -44,7 +44,7 @@ version = {attr = "nnm.__version__"}
 
 [project.optional-dependencies]
 dev = [
-    "transformers==4.51.3",
+    "transformers>=4.51.3",
     "pytest==8.3.4",
 ]
 
