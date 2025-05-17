@@ -107,3 +107,21 @@ class Qwen2Backbone(nn.Module):
             output_embeds = decoder_layer(output_embeds, None)
         output_embeds = self.norm(output_embeds)
         return output_embeds
+
+class Qwen2LM(nn.Module):
+    def __init__(
+        self, *, vocab_size, embed_dim, max_seq_len, padding_idx, num_hidden_layers, rms_norm_eps, rope_base,
+        num_attn_heads, num_kv_heads, intermediate_size,
+    ):
+        super().__init__()
+        self.backbone = Qwen2Backbone(
+            vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=padding_idx,
+            num_hidden_layers=num_hidden_layers, num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads,
+            rope_base=rope_base, rms_norm_eps=rms_norm_eps, intermediate_size=intermediate_size,
+        )
+        self.lm_head = nn.Linear(embed_dim, vocab_size, bias=False)
+
+    def forward(self, input_ids, attn_mask):
+        output_embeds = self.backbone(input_ids, attn_mask)
+        logits = self.lm_head(output_embeds)
+        return logits

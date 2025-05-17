@@ -2,7 +2,10 @@ import torch, pytest
 from transformers.models.qwen2 import modeling_qwen2 as qwen2
 from transformers.models.qwen2 import configuration_qwen2 as cfg
 from nnm.layers.rope import QwenRoPE
-from nnm.models.qwen2 import Qwen2Attention, Qwen2MLP, Qwen2DecoderLayer, Qwen2Backbone
+from nnm.models.qwen2 import (
+    Qwen2Attention, Qwen2MLP, Qwen2DecoderLayer, Qwen2Backbone,
+    Qwen2LM,
+)
 from nnm.layers.norm import Qwen2RMSNorm
 
 def init_linear_weight(src, dst, bias=True):
@@ -165,6 +168,13 @@ def test_qwen2_decoder_layer(batch, seq_len, max_seq_len, embed_dim, intermediat
     assert nnm_o.shape == hf_o.shape
     assert torch.abs(nnm_o - hf_o).mean() < 1e-5
 
+def init_qwen2_backbone(nnm_backbone, hf_backbone, kv_embed_dim):
+    hf_backbone.embed_tokens.weight = nnm_backbone.token_embeds.weight
+    assert len(nnm_backbone.layers) == len(hf_backbone.layers)
+    for nnm_decoder_layer, hf_decoder_layer in zip(nnm_backbone.layers, hf_backbone.layers):
+        init_decoder_layer(nnm_decoder_layer, hf_decoder_layer, kv_embed_dim)
+    hf_backbone.norm.weight = nnm_backbone.norm.weight
+
 @pytest.mark.parametrize(
     ','.join([
         'batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps',
@@ -194,16 +204,52 @@ def test_qwen2_backbone(
     )
     hf_backbone = qwen2.Qwen2Model(config)
 
-    hf_backbone.embed_tokens.weight = nnm_backbone.token_embeds.weight
-    assert len(nnm_backbone.layers) == len(hf_backbone.layers)
-    for nnm_decoder_layer, hf_decoder_layer in zip(nnm_backbone.layers, hf_backbone.layers):
-        init_decoder_layer(nnm_decoder_layer, hf_decoder_layer, kv_embed_dim)
-    hf_backbone.norm.weight = nnm_backbone.norm.weight
+    init_qwen2_backbone(nnm_backbone, hf_backbone, kv_embed_dim)
 
     x = torch.randint(0, vocab_size, (batch, seq_len))
     attn_mask = torch.zeros((1, 1, 1, 1))
 
     nnm_o = nnm_backbone(x, attn_mask)
     hf_o = hf_backbone(input_ids=x, attention_mask=attn_mask)[0]
+    assert nnm_o.shape == hf_o.shape
+    assert torch.abs(nnm_o - hf_o).mean() < 1e-5
+
+@pytest.mark.parametrize(
+    ','.join([
+        'batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps',
+        'vocab_size, num_hidden_layers',
+    ]), [
+        (1, 123, 512, 96, 256, 16, 4, 23233, 1e-6, 2134, 6),
+        (2, 233, 768, 128, 384, 32, 8, 12345, 1e-7, 3211, 9),
+    ]
+)
+@torch.no_grad()
+def test_qwen2_lm(
+    batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps,
+    vocab_size, num_hidden_layers,
+):
+    head_dim = embed_dim // num_attn_heads
+    kv_embed_dim = head_dim * num_kv_heads
+    nnm_lm = Qwen2LM(
+        vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=0, rms_norm_eps=eps,
+        num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, rope_base=base, intermediate_size=intermediate_size,
+        num_hidden_layers=num_hidden_layers,
+    )
+    config = cfg.Qwen2Config(
+        hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu",
+        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads,
+        rms_norm_eps=eps, head_dim=head_dim, rope_theta=base, max_position_embeddings=max_seq_len,
+        vocab_size=vocab_size, use_cache=False, num_hidden_layers=num_hidden_layers,
+    )
+    hf_lm = qwen2.Qwen2ForCausalLM(config)
+
+    init_qwen2_backbone(nnm_lm.backbone, hf_lm.model, kv_embed_dim)
+    hf_lm.lm_head.weight = nnm_lm.lm_head.weight
+
+    x = torch.randint(0, vocab_size, (batch, seq_len))
+    attn_mask = torch.zeros((1, 1, 1, 1))
+
+    nnm_o = nnm_lm(x, attn_mask)
+    hf_o = hf_lm(input_ids=x, attention_mask=attn_mask)[0]
     assert nnm_o.shape == hf_o.shape
     assert torch.abs(nnm_o - hf_o).mean() < 1e-5
