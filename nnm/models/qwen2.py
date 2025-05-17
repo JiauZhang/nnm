@@ -21,6 +21,19 @@ def expand_kv_heads(x, num_kv_groups):
     x = x[:, :, None, :, :].expand(batch, num_kv_heads, num_kv_groups, seq_len, head_dim)
     return x.reshape(batch, -1, seq_len, head_dim)
 
+@torch.no_grad()
+def make_causal_attn_mask(attn_mask):
+    batch, seq_len = attn_mask.shape
+    tril = torch.tril(torch.ones(seq_len, seq_len))
+    padding_mask = attn_mask.unsqueeze(2)
+    padding_mask = padding_mask @ padding_mask.transpose(1, 2)
+    attn_mask = tril * padding_mask
+    inf_mask = attn_mask == 0
+    dtype_info = torch.finfo if attn_mask.dtype.is_floating_point else torch.iinfo
+    inf_val = dtype_info(attn_mask.dtype).min
+    attn_mask = attn_mask.masked_fill(inf_mask, inf_val)
+    return attn_mask
+
 class Qwen2Attention(nn.Module):
     def __init__(self, *, embed_dim, num_attn_heads, num_kv_heads, position_encoder):
         super().__init__()
@@ -35,8 +48,9 @@ class Qwen2Attention(nn.Module):
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
         self.kv_proj = nn.Linear(embed_dim, 2 * num_kv_heads * self.head_dim, bias=True)
         self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.kv_cache = ()
 
-    def forward(self, x, cache=False, position=None, attn_mask=None):
+    def forward(self, x, kv_cache=False, position=None, attn_mask=None):
         batch, seq_len = x.shape[:-1]
 
         q = self.q_proj(x)
@@ -45,12 +59,13 @@ class Qwen2Attention(nn.Module):
         k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        q = self.position_encoder(q, cache=cache, position=position)
-        k = self.position_encoder(k, cache=cache, position=position)
+        q = self.position_encoder(q, kv_cache=kv_cache, position=position)
+        k = self.position_encoder(k, kv_cache=kv_cache, position=position)
 
         k = expand_kv_heads(k, self.num_kv_groups)
         v = expand_kv_heads(v, self.num_kv_groups)
         attn_weight = (q @ k.transpose(2, 3) * self.scale).softmax(dim=-1)
+        if attn_mask: attn_weight += attn_mask
         o = attn_weight @ v
         o = self.o_proj(o.transpose(1, 2).reshape(batch, seq_len, self.embed_dim))
         return o
@@ -68,9 +83,9 @@ class Qwen2DecoderLayer(nn.Module):
         self.norm_1 = Qwen2RMSNorm(embed_dim=embed_dim, eps=eps)
         self.norm_2 = Qwen2RMSNorm(embed_dim=embed_dim, eps=eps)
 
-    def forward(self, x, attn_mask):
+    def forward(self, x, attn_mask=None, kv_cache=False):
         y = self.norm_1(x)
-        y = self.attn(y, attn_mask=attn_mask)
+        y = self.attn(y, attn_mask=attn_mask, kv_cache=kv_cache)
         x = x + y
 
         y = self.norm_2(x)
@@ -100,11 +115,12 @@ class Qwen2Backbone(nn.Module):
         )
         self.norm = Qwen2RMSNorm(embed_dim, eps=rms_norm_eps)
 
-    def forward(self, input_ids, attn_mask):
+    def forward(self, input_ids, attn_mask=None, kv_cache=False):
         input_embeds = self.token_embeds(input_ids)
+        if attn_mask: attn_mask = make_causal_attn_mask(attn_mask)
         output_embeds = input_embeds
         for decoder_layer in self.layers:
-            output_embeds = decoder_layer(output_embeds, None)
+            output_embeds = decoder_layer(output_embeds, attn_mask=attn_mask, kv_cache=kv_cache)
         output_embeds = self.norm(output_embeds)
         return output_embeds
 
@@ -121,7 +137,7 @@ class Qwen2LM(nn.Module):
         )
         self.lm_head = nn.Linear(embed_dim, vocab_size, bias=False)
 
-    def forward(self, input_ids, attn_mask):
-        output_embeds = self.backbone(input_ids, attn_mask)
+    def forward(self, input_ids, attn_mask=None, kv_cache=False):
+        output_embeds = self.backbone(input_ids, attn_mask=attn_mask, kv_cache=kv_cache)
         logits = self.lm_head(output_embeds)
         return logits
