@@ -16,26 +16,28 @@ class Qwen2MLP(nn.Module):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
 
-def expand_kv_heads(x, num_kv_groups):
-    batch, num_kv_heads, seq_len, head_dim = x.shape
-    x = x[:, :, None, :, :].expand(batch, num_kv_heads, num_kv_groups, seq_len, head_dim)
-    return x.reshape(batch, -1, seq_len, head_dim)
-
 @torch.no_grad()
 def make_causal_attn_mask(attn_mask):
     batch, seq_len = attn_mask.shape
-    tril = torch.tril(torch.ones(seq_len, seq_len))
-    padding_mask = attn_mask.unsqueeze(2)
-    padding_mask = padding_mask @ padding_mask.transpose(1, 2)
-    attn_mask = tril * padding_mask
-    inf_mask = attn_mask == 0
     dtype_info = torch.finfo if attn_mask.dtype.is_floating_point else torch.iinfo
     inf_val = dtype_info(attn_mask.dtype).min
-    attn_mask = attn_mask.masked_fill(inf_mask, inf_val)
-    return attn_mask
+    causal_attn_mask = torch.full((seq_len, seq_len), fill_value=inf_val)
+    query_position = torch.arange(seq_len)
+    key_position = torch.arange(seq_len)
+    causal_attn_mask *= key_position > query_position.reshape(-1, 1)
+    causal_attn_mask = causal_attn_mask[None, :, :].expand(batch, -1, -1)
+    padding_mask = causal_attn_mask + attn_mask[:, None, :]
+    padding_mask = padding_mask == 0
+    causal_attn_mask = causal_attn_mask.masked_fill(padding_mask, inf_val).unsqueeze(1)
+    return causal_attn_mask
+
+def update_kv_cache(kv_cache, k_or_v, idx):
+    kv_cache[idx].append(k_or_v)
+    k = torch.cat(kv_cache[idx], dim=1)
+    return k
 
 class Qwen2Attention(nn.Module):
-    def __init__(self, *, embed_dim, num_attn_heads, num_kv_heads, position_encoder):
+    def __init__(self, *, embed_dim, num_attn_heads, num_kv_heads, position_encoder, use_kv_cache=False):
         super().__init__()
         assert embed_dim % num_attn_heads == 0
         self.embed_dim = embed_dim
@@ -43,14 +45,14 @@ class Qwen2Attention(nn.Module):
         self.num_attn_heads = num_attn_heads
         self.num_kv_heads = num_kv_heads
         self.num_kv_groups = self.num_attn_heads // self.num_kv_heads
+        self.use_kv_cache = use_kv_cache
         self.position_encoder = position_encoder
-        self.scale = self.head_dim ** -0.5
+        self.attn_scale = self.head_dim ** -0.5
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
         self.kv_proj = nn.Linear(embed_dim, 2 * num_kv_heads * self.head_dim, bias=True)
         self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.kv_cache = ()
 
-    def forward(self, x, kv_cache=False, position=None, attn_mask=None):
+    def forward(self, x, kv_cache=None, position=None, attn_mask=None):
         batch, seq_len = x.shape[:-1]
 
         q = self.q_proj(x)
@@ -59,31 +61,38 @@ class Qwen2Attention(nn.Module):
         k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        q = self.position_encoder(q, kv_cache=kv_cache, position=position)
-        k = self.position_encoder(k, kv_cache=kv_cache, position=position)
+        q = self.position_encoder(q, use_kv_cache=self.use_kv_cache, position=position)
+        k = self.position_encoder(k, use_kv_cache=self.use_kv_cache, position=position)
 
-        k = expand_kv_heads(k, self.num_kv_groups)
-        v = expand_kv_heads(v, self.num_kv_groups)
-        attn_weight = (q @ k.transpose(2, 3) * self.scale).softmax(dim=-1)
-        if attn_mask: attn_weight += attn_mask
+        if self.use_kv_cache:
+            k = update_kv_cache(kv_cache, k, 0)
+            v = update_kv_cache(kv_cache, v, 1)
+
+        k = k.repeat_interleave(self.num_kv_groups, dim=1)
+        v = v.repeat_interleave(self.num_kv_groups, dim=1)
+        attn_weight = q @ k.transpose(2, 3) * self.attn_scale
+        if attn_mask is not None: attn_weight += attn_mask.to(dtype=attn_weight.dtype)
+        attn_weight = attn_weight.softmax(dim=-1)
         o = attn_weight @ v
         o = self.o_proj(o.transpose(1, 2).reshape(batch, seq_len, self.embed_dim))
         return o
 
 class Qwen2DecoderLayer(nn.Module):
-    def __init__(self, *, position_encoder, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, eps):
+    def __init__(
+        self, *, position_encoder, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, eps, use_kv_cache=False,
+    ):
         super().__init__()
         self.embed_dim = embed_dim
         self.position_encoder = position_encoder
         self.attn = Qwen2Attention(
             embed_dim=embed_dim, num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads,
-            position_encoder=position_encoder,
+            position_encoder=position_encoder, use_kv_cache=use_kv_cache,
         )
         self.mlp = Qwen2MLP(embed_dim=embed_dim, intermediate_size=intermediate_size)
         self.norm_1 = Qwen2RMSNorm(embed_dim=embed_dim, eps=eps)
         self.norm_2 = Qwen2RMSNorm(embed_dim=embed_dim, eps=eps)
 
-    def forward(self, x, attn_mask=None, kv_cache=False):
+    def forward(self, x, attn_mask=None, kv_cache=None):
         y = self.norm_1(x)
         y = self.attn(y, attn_mask=attn_mask, kv_cache=kv_cache)
         x = x + y
@@ -97,7 +106,7 @@ class Qwen2DecoderLayer(nn.Module):
 class Qwen2Backbone(nn.Module):
     def __init__(
         self, *, vocab_size, embed_dim, max_seq_len, padding_idx, num_hidden_layers, rms_norm_eps, rope_base,
-        num_attn_heads, num_kv_heads, intermediate_size,
+        num_attn_heads, num_kv_heads, intermediate_size, use_kv_cache=False,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -110,16 +119,17 @@ class Qwen2Backbone(nn.Module):
         self.layers = nn.ModuleList(
             [Qwen2DecoderLayer(
                 position_encoder=self.position_encoder, embed_dim=embed_dim, intermediate_size=intermediate_size,
-                num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, eps=rms_norm_eps,
+                num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, eps=rms_norm_eps, use_kv_cache=use_kv_cache,
             ) for _ in range(num_hidden_layers)]
         )
         self.norm = Qwen2RMSNorm(embed_dim, eps=rms_norm_eps)
+        self.kv_cache = [([], []) for _ in range(num_hidden_layers)]
 
-    def forward(self, input_ids, attn_mask=None, kv_cache=False):
+    def forward(self, input_ids, attn_mask=None):
         input_embeds = self.token_embeds(input_ids)
-        if attn_mask: attn_mask = make_causal_attn_mask(attn_mask)
+        if attn_mask is not None: attn_mask = make_causal_attn_mask(attn_mask)
         output_embeds = input_embeds
-        for decoder_layer in self.layers:
+        for decoder_layer, kv_cache in zip(self.layers, self.kv_cache):
             output_embeds = decoder_layer(output_embeds, attn_mask=attn_mask, kv_cache=kv_cache)
         output_embeds = self.norm(output_embeds)
         return output_embeds
@@ -127,17 +137,17 @@ class Qwen2Backbone(nn.Module):
 class Qwen2LM(nn.Module):
     def __init__(
         self, *, vocab_size, embed_dim, max_seq_len, padding_idx, num_hidden_layers, rms_norm_eps, rope_base,
-        num_attn_heads, num_kv_heads, intermediate_size,
+        num_attn_heads, num_kv_heads, intermediate_size, use_kv_cache=False,
     ):
         super().__init__()
         self.backbone = Qwen2Backbone(
             vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=padding_idx,
             num_hidden_layers=num_hidden_layers, num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads,
-            rope_base=rope_base, rms_norm_eps=rms_norm_eps, intermediate_size=intermediate_size,
+            rope_base=rope_base, rms_norm_eps=rms_norm_eps, intermediate_size=intermediate_size, use_kv_cache=use_kv_cache,
         )
         self.lm_head = nn.Linear(embed_dim, vocab_size, bias=False)
 
-    def forward(self, input_ids, attn_mask=None, kv_cache=False):
-        output_embeds = self.backbone(input_ids, attn_mask=attn_mask, kv_cache=kv_cache)
+    def forward(self, input_ids, attn_mask=None):
+        output_embeds = self.backbone(input_ids, attn_mask=attn_mask)
         logits = self.lm_head(output_embeds)
         return logits

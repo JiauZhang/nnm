@@ -1,10 +1,10 @@
-import torch, pytest
+import torch, pytest, random
 from transformers.models.qwen2 import modeling_qwen2 as qwen2
 from transformers.models.qwen2 import configuration_qwen2 as cfg
 from nnm.layers.rope import QwenRoPE
 from nnm.models.qwen2 import (
     Qwen2Attention, Qwen2MLP, Qwen2DecoderLayer, Qwen2Backbone,
-    Qwen2LM,
+    Qwen2LM, make_causal_attn_mask,
 )
 from nnm.layers.norm import Qwen2RMSNorm
 
@@ -175,6 +175,15 @@ def init_qwen2_backbone(nnm_backbone, hf_backbone, kv_embed_dim):
         init_decoder_layer(nnm_decoder_layer, hf_decoder_layer, kv_embed_dim)
     hf_backbone.norm.weight = nnm_backbone.norm.weight
 
+def random_causal_mask(x):
+    batch, seq_len = x.shape
+    attn_mask = torch.ones_like(x, dtype=torch.float32)
+    min_idx = max(1, (seq_len - 1) // 2)
+    for b in range(batch):
+        idx = random.randint(min_idx, seq_len-1)
+        attn_mask[b, idx:] = 0
+    return attn_mask
+
 @pytest.mark.parametrize(
     ','.join([
         'batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps',
@@ -207,9 +216,15 @@ def test_qwen2_backbone(
     init_qwen2_backbone(nnm_backbone, hf_backbone, kv_embed_dim)
 
     x = torch.randint(0, vocab_size, (batch, seq_len))
-    attn_mask = torch.zeros((1, 1, 1, 1))
+    input_embeds = nnm_backbone.token_embeds(x)
+    cache_position = torch.arange(0, seq_len)
+    attn_mask = random_causal_mask(x)
+    nnm_attn_mask = make_causal_attn_mask(attn_mask)
+    hf_attn_mask = hf_backbone._update_causal_mask(attn_mask, input_embeds, cache_position, None)
+    assert nnm_attn_mask.shape == hf_attn_mask.shape and nnm_attn_mask.dtype == hf_attn_mask.dtype
+    assert (nnm_attn_mask == hf_attn_mask).all()
 
-    nnm_o = nnm_backbone(x, attn_mask)
+    nnm_o = nnm_backbone(x, attn_mask=attn_mask)
     hf_o = hf_backbone(input_ids=x, attention_mask=attn_mask)[0]
     assert nnm_o.shape == hf_o.shape
     assert torch.abs(nnm_o - hf_o).mean() < 1e-5
@@ -247,9 +262,9 @@ def test_qwen2_lm(
     hf_lm.lm_head.weight = nnm_lm.lm_head.weight
 
     x = torch.randint(0, vocab_size, (batch, seq_len))
-    attn_mask = torch.zeros((1, 1, 1, 1))
+    attn_mask = random_causal_mask(x)
 
-    nnm_o = nnm_lm(x, attn_mask)
+    nnm_o = nnm_lm(x, attn_mask=attn_mask)
     hf_o = hf_lm(input_ids=x, attention_mask=attn_mask)[0]
     assert nnm_o.shape == hf_o.shape
     assert torch.abs(nnm_o - hf_o).mean() < 1e-5

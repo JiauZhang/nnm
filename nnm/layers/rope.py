@@ -1,8 +1,8 @@
 import math, torch
 from torch import nn
 
-def get_seq_idx(seq_len, kv_cache=False, position=None):
-    if kv_cache:
+def get_seq_idx(seq_len, use_kv_cache=False, position=None):
+    if use_kv_cache:
         seq_idx = torch.arange(position, position + seq_len)
     else:
         seq_idx = torch.arange(seq_len)
@@ -30,11 +30,11 @@ class RoPE(nn.Module):
         )
         self.sin = torch.sin(m_theta).to(dtype=torch.float32)
 
-    def forward(self, x, kv_cache=False, position=None):
+    def forward(self, x, use_kv_cache=False, position=None):
         # [..., seq_len, embed_dim]
         shape = x.shape
         assert shape[-1] == self.embed_dim
-        seq_idx = get_seq_idx(shape[-2], kv_cache, position)
+        seq_idx = get_seq_idx(shape[-2], use_kv_cache, position)
         sin_pe = self.sin[seq_idx, :]
         cos_pe = self.cos[seq_idx, :]
         y = x * cos_pe + x.reshape(-1, 2).flip(dims=[-1]).reshape(shape) * sin_pe
@@ -62,10 +62,10 @@ class QwenRoPE(nn.Module):
         self.sin = torch.cat([-sin_m_theta, sin_m_theta], dim=-1).to(dtype=torch.float32)
         self.cos = torch.cos(m_theta).to(dtype=torch.float32).repeat(1, 2)
 
-    def forward(self, x, kv_cache=False, position=None):
+    def forward(self, x, use_kv_cache=False, position=None):
         shape = x.shape
         assert shape[-1] == self.embed_dim
-        seq_idx = get_seq_idx(shape[-2], kv_cache, position)
+        seq_idx = get_seq_idx(shape[-2], use_kv_cache, position)
         sin_pe = self.sin[seq_idx, :]
         cos_pe = self.cos[seq_idx, :]
         half_embed_dim = shape[-1] // 2
@@ -125,10 +125,10 @@ class YaRN(nn.Module):
         self.sin = torch.cat([-sin_m_theta, sin_m_theta], dim=-1).to(dtype=torch.float32)
         self.cos = (torch.cos(m_theta) * self.temperature).to(dtype=torch.float32).repeat(1, 2)
 
-    def forward(self, x, kv_cache=False, position=None):
+    def forward(self, x, use_kv_cache=False, position=None):
         shape = x.shape
         assert shape[-1] == self.embed_dim
-        seq_idx = get_seq_idx(shape[-2], kv_cache, position)
+        seq_idx = get_seq_idx(shape[-2], use_kv_cache, position)
         sin_pe = self.sin[seq_idx, :]
         cos_pe = self.cos[seq_idx, :]
         half_embed_dim = shape[-1] // 2
