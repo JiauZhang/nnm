@@ -17,14 +17,19 @@ class Qwen2MLP(nn.Module):
         return down_proj
 
 @torch.no_grad()
-def make_causal_attn_mask(attn_mask):
+def make_causal_attn_mask(attn_mask, kv_cache_len, sliding_window):
     batch, seq_len = attn_mask.shape
     dtype_info = torch.finfo if attn_mask.dtype.is_floating_point else torch.iinfo
     inf_val = dtype_info(attn_mask.dtype).min
-    causal_attn_mask = torch.full((seq_len, seq_len), fill_value=inf_val)
-    query_position = torch.arange(seq_len)
-    key_position = torch.arange(seq_len)
-    causal_attn_mask *= key_position > query_position.reshape(-1, 1)
+    kv_len = seq_len + kv_cache_len
+    causal_attn_mask = torch.full((seq_len, kv_len), fill_value=inf_val)
+    query_position = torch.arange(kv_cache_len, kv_len)
+    key_position = torch.arange(kv_len)
+    triu_attn_mask = query_position > key_position.reshape(-1, 1)
+    if kv_len > sliding_window:
+        sliding_attn_mask = (query_position - sliding_window).reshape(-1, 1) >= key_position.reshape(1, -1)
+        triu_attn_mask.bitwise_or_(sliding_attn_mask)
+    causal_attn_mask *= triu_attn_mask
     causal_attn_mask = causal_attn_mask[None, :, :].expand(batch, -1, -1)
     padding_mask = causal_attn_mask + attn_mask[:, None, :]
     padding_mask = padding_mask == 0
@@ -106,12 +111,14 @@ class Qwen2DecoderLayer(nn.Module):
 class Qwen2Backbone(nn.Module):
     def __init__(
         self, *, vocab_size, embed_dim, max_seq_len, padding_idx, num_hidden_layers, rms_norm_eps, rope_base,
-        num_attn_heads, num_kv_heads, intermediate_size, use_kv_cache=False,
+        num_attn_heads, num_kv_heads, intermediate_size, sliding_window, use_kv_cache=False,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.head_dim = embed_dim // num_attn_heads
+        self.num_kv_groups = num_attn_heads // num_kv_heads
+        self.sliding_window = sliding_window
         self.padding_idx = padding_idx
         self.num_hidden_layers = num_hidden_layers
         self.token_embeds = nn.Embedding(vocab_size, embed_dim, padding_idx=padding_idx)
@@ -127,7 +134,8 @@ class Qwen2Backbone(nn.Module):
 
     def forward(self, input_ids, attn_mask=None):
         input_embeds = self.token_embeds(input_ids)
-        if attn_mask is not None: attn_mask = make_causal_attn_mask(attn_mask)
+        kv_cache_len = len(self.kv_cache[0][0]) * self.num_kv_groups
+        if attn_mask is not None: attn_mask = make_causal_attn_mask(attn_mask, kv_cache_len, self.sliding_window)
         output_embeds = input_embeds
         for decoder_layer, kv_cache in zip(self.layers, self.kv_cache):
             output_embeds = decoder_layer(output_embeds, attn_mask=attn_mask, kv_cache=kv_cache)
@@ -137,13 +145,14 @@ class Qwen2Backbone(nn.Module):
 class Qwen2LM(nn.Module):
     def __init__(
         self, *, vocab_size, embed_dim, max_seq_len, padding_idx, num_hidden_layers, rms_norm_eps, rope_base,
-        num_attn_heads, num_kv_heads, intermediate_size, use_kv_cache=False,
+        num_attn_heads, num_kv_heads, intermediate_size, sliding_window, use_kv_cache=False,
     ):
         super().__init__()
         self.backbone = Qwen2Backbone(
             vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=padding_idx,
             num_hidden_layers=num_hidden_layers, num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads,
-            rope_base=rope_base, rms_norm_eps=rms_norm_eps, intermediate_size=intermediate_size, use_kv_cache=use_kv_cache,
+            rope_base=rope_base, rms_norm_eps=rms_norm_eps, intermediate_size=intermediate_size,
+            sliding_window=sliding_window, use_kv_cache=use_kv_cache,
         )
         self.lm_head = nn.Linear(embed_dim, vocab_size, bias=False)
 

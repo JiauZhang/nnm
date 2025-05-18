@@ -187,27 +187,29 @@ def random_causal_mask(x):
 @pytest.mark.parametrize(
     ','.join([
         'batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps',
-        'vocab_size, num_hidden_layers',
+        'vocab_size, num_hidden_layers, sliding_window',
     ]), [
-        (1, 123, 512, 96, 256, 16, 4, 23432, 1e-6, 1234, 6),
-        (2, 233, 768, 128, 384, 32, 8, 10000, 1e-7, 2345, 9),
+        (1, 123, 512, 96, 256, 16, 4, 23432, 1e-6, 1234, 6, 1024),
+        # test sliding window
+        (1, 123, 512, 96, 256, 16, 4, 23432, 1e-6, 1234, 6, 68),
+        (2, 233, 768, 128, 384, 32, 8, 10000, 1e-7, 2345, 9, 128),
     ]
 )
 @torch.no_grad()
 def test_qwen2_backbone(
     batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps,
-    vocab_size, num_hidden_layers,
+    vocab_size, num_hidden_layers, sliding_window,
 ):
     head_dim = embed_dim // num_attn_heads
     kv_embed_dim = head_dim * num_kv_heads
     nnm_backbone = Qwen2Backbone(
         vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=0, rms_norm_eps=eps,
         num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, rope_base=base, intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers,
+        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window,
     )
     config = cfg.Qwen2Config(
         hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu",
-        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads,
+        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, sliding_window=sliding_window,
         rms_norm_eps=eps, head_dim=head_dim, rope_theta=base, max_position_embeddings=max_seq_len,
         vocab_size=vocab_size, use_cache=False, num_hidden_layers=num_hidden_layers,
     )
@@ -219,9 +221,10 @@ def test_qwen2_backbone(
     input_embeds = nnm_backbone.token_embeds(x)
     cache_position = torch.arange(0, seq_len)
     attn_mask = random_causal_mask(x)
-    nnm_attn_mask = make_causal_attn_mask(attn_mask)
+    nnm_attn_mask = make_causal_attn_mask(attn_mask, 0, sliding_window)
     hf_attn_mask = hf_backbone._update_causal_mask(attn_mask, input_embeds, cache_position, None)
     assert nnm_attn_mask.shape == hf_attn_mask.shape and nnm_attn_mask.dtype == hf_attn_mask.dtype
+    assert (nnm_attn_mask < -10).sum() == (hf_attn_mask < -10).sum()
     assert (nnm_attn_mask == hf_attn_mask).all()
 
     nnm_o = nnm_backbone(x, attn_mask=attn_mask)
@@ -232,27 +235,29 @@ def test_qwen2_backbone(
 @pytest.mark.parametrize(
     ','.join([
         'batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps',
-        'vocab_size, num_hidden_layers',
+        'vocab_size, num_hidden_layers, sliding_window',
     ]), [
-        (1, 123, 512, 96, 256, 16, 4, 23233, 1e-6, 2134, 6),
-        (2, 233, 768, 128, 384, 32, 8, 12345, 1e-7, 3211, 9),
+        (1, 123, 512, 96, 256, 16, 4, 23233, 1e-6, 2134, 6, 1234),
+        # test sliding window
+        (1, 123, 512, 96, 256, 16, 4, 23233, 1e-6, 2134, 6, 96),
+        (2, 233, 768, 128, 384, 32, 8, 12345, 1e-7, 3211, 9, 123),
     ]
 )
 @torch.no_grad()
 def test_qwen2_lm(
     batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps,
-    vocab_size, num_hidden_layers,
+    vocab_size, num_hidden_layers, sliding_window,
 ):
     head_dim = embed_dim // num_attn_heads
     kv_embed_dim = head_dim * num_kv_heads
     nnm_lm = Qwen2LM(
         vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=0, rms_norm_eps=eps,
         num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, rope_base=base, intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers,
+        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window,
     )
     config = cfg.Qwen2Config(
         hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu",
-        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads,
+        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, sliding_window=sliding_window,
         rms_norm_eps=eps, head_dim=head_dim, rope_theta=base, max_position_embeddings=max_seq_len,
         vocab_size=vocab_size, use_cache=False, num_hidden_layers=num_hidden_layers,
     )
