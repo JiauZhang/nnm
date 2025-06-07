@@ -37,9 +37,10 @@ def make_causal_attn_mask(attn_mask, kv_cache_len, sliding_window):
     return causal_attn_mask
 
 def update_kv_cache(kv_cache, k_or_v, idx):
+    # kv_cache_shape: [batch, num_kv_heads, seq_len, head_dim]
     kv_cache[idx].append(k_or_v)
-    k = torch.cat(kv_cache[idx], dim=1)
-    return k
+    k_or_v = torch.cat(kv_cache[idx], dim=-2)
+    return k_or_v
 
 class Qwen2Attention(nn.Module):
     def __init__(self, *, embed_dim, num_attn_heads, num_kv_heads, position_encoder, use_kv_cache=False):
@@ -57,7 +58,7 @@ class Qwen2Attention(nn.Module):
         self.kv_proj = nn.Linear(embed_dim, 2 * num_kv_heads * self.head_dim, bias=True)
         self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
-    def forward(self, x, kv_cache=None, position=None, attn_mask=None):
+    def forward(self, x, kv_cache=None, attn_mask=None):
         batch, seq_len = x.shape[:-1]
 
         q = self.q_proj(x)
@@ -66,6 +67,7 @@ class Qwen2Attention(nn.Module):
         k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
+        position = len(kv_cache[0]) if self.use_kv_cache else None
         q = self.position_encoder(q, use_kv_cache=self.use_kv_cache, position=position)
         k = self.position_encoder(k, use_kv_cache=self.use_kv_cache, position=position)
 
@@ -73,6 +75,7 @@ class Qwen2Attention(nn.Module):
             k = update_kv_cache(kv_cache, k, 0)
             v = update_kv_cache(kv_cache, v, 1)
 
+        # kv_cache_shape: [batch, num_kv_heads, seq_len, head_dim]
         k = k.repeat_interleave(self.num_kv_groups, dim=1)
         v = v.repeat_interleave(self.num_kv_groups, dim=1)
         attn_weight = q @ k.transpose(2, 3) * self.attn_scale

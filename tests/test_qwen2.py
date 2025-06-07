@@ -250,18 +250,19 @@ def test_qwen2_lm(
 ):
     head_dim = embed_dim // num_attn_heads
     kv_embed_dim = head_dim * num_kv_heads
-    nnm_lm = Qwen2LM(
+    nnm_config = dict(
         vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=0, rms_norm_eps=eps,
         num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, rope_base=base, intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window,
+        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window, use_kv_cache=False,
     )
-    config = cfg.Qwen2Config(
+    nnm_lm = Qwen2LM(**nnm_config)
+    hf_config = cfg.Qwen2Config(
         hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu",
         num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, sliding_window=sliding_window,
         rms_norm_eps=eps, head_dim=head_dim, rope_theta=base, max_position_embeddings=max_seq_len,
         vocab_size=vocab_size, use_cache=False, num_hidden_layers=num_hidden_layers,
     )
-    hf_lm = qwen2.Qwen2ForCausalLM(config)
+    hf_lm = qwen2.Qwen2ForCausalLM(hf_config)
 
     init_qwen2_backbone(nnm_lm.backbone, hf_lm.model, kv_embed_dim)
     hf_lm.lm_head.weight = nnm_lm.lm_head.weight
@@ -273,3 +274,15 @@ def test_qwen2_lm(
     hf_o = hf_lm(input_ids=x, attention_mask=attn_mask)[0]
     assert nnm_o.shape == hf_o.shape
     assert torch.abs(nnm_o - hf_o).mean() < 1e-5
+
+    # autoregressive
+    nnm_config['use_kv_cache'] = True
+    nnm_lm = Qwen2LM(**nnm_config)
+    hf_config.use_cache = True
+    hf_lm = qwen2.Qwen2ForCausalLM(hf_config)
+    attn_mask = None
+    for _ in range(seq_len):
+        x = torch.randint(0, vocab_size, (batch, 1))
+        nnm_o = nnm_lm(x, attn_mask=attn_mask)
+        hf_o = hf_lm(input_ids=x, attention_mask=attn_mask)[0]
+        assert nnm_o.shape == hf_o.shape
