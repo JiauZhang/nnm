@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
 [project]
 name = "nnm"
 dynamic = ["version"]
@@ -28,19 +32,11 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/jiauzhang/nnm"
 
-[build-system]
-requires = [
-    "build",
-    "setuptools>=42",
-    "wheel",
-]
-build-backend = "setuptools.build_meta"
+[tool.hatch.version]
+path = "nnm/version.py"
 
-[tool.setuptools]
-package-dir = {"nnm" = "nnm"}
-
-[tool.setuptools.dynamic]
-version = {attr = "nnm.__version__"}
+[tool.hatch.build.targets.wheel]
+packages = ["nnm"]
 
 [project.optional-dependencies]
 dev = [
