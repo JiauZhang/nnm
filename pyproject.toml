@@ -10,18 +10,19 @@ readme = "README.md"
 authors = [
     {name = "Jiau Zhang", email = "jiauzhang@163.com"},
 ]
+license = {file = "LICENSE"}
 classifiers = [
     'Intended Audience :: Developers',
     'Topic :: Scientific/Engineering :: Artificial Intelligence',
-    'License :: OSI Approved :: GNU General Public License v2 (GPLv2)',
-    'Programming Language :: Python :: 3.8',
+    'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
+    'Programming Language :: Python :: 3.10',
 ]
 keywords = [
     'PyTorch',
     'Deep Learning',
     'Artificial Intelligence',
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "torch",
