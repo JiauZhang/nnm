@@ -1,13 +1,11 @@
 import numpy as np
 from collections import OrderedDict
 
-def count_parameter(model, precision=None, base=None):
+def count_parameter(model, precision=1, base=None):
     params = model.parameters()
-    count = sum([np.prod(p.size()) for p in params])
+    count = np.sum([np.prod(p.size()) for p in params]).item()
     if precision:
         count = format_count(count, precision=precision, base=base)
-    else:
-        count = int(count)
     return count
 
 def format_count(count, base=None, precision=2):
