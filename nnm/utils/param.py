@@ -8,7 +8,7 @@ def count_parameter(model, precision=1, base=None):
         count = format_count(count, precision=precision, base=base)
     return count
 
-def format_count(count, base=None, precision=2):
+def format_count(count, base=None, precision=1):
     base_map = OrderedDict(B=1e9, M=1e6, K=1e3)
 
     if base not in base_map:
