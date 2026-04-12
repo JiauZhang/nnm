@@ -1,7 +1,8 @@
-import torch
+import torch, re
 from torch import nn
 from nnm.layers.rope import QwenRoPE
 from nnm.layers.norm import Qwen2RMSNorm
+from conippets.config import Config
 
 class Qwen2MLP(nn.Module):
     def __init__(self, *, embed_dim, intermediate_size):
@@ -37,7 +38,6 @@ def make_causal_attn_mask(attn_mask, kv_cache_len, sliding_window):
     return causal_attn_mask
 
 def update_kv_cache(kv_cache, k_or_v, idx):
-    # kv_cache_shape: [batch, num_kv_heads, seq_len, head_dim]
     kv_cache[idx].append(k_or_v)
     k_or_v = torch.cat(kv_cache[idx], dim=-2)
     return k_or_v
@@ -55,33 +55,37 @@ class Qwen2Attention(nn.Module):
         self.position_encoder = position_encoder
         self.attn_scale = self.head_dim ** -0.5
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.kv_proj = nn.Linear(embed_dim, 2 * num_kv_heads * self.head_dim, bias=True)
+        self.k_proj = nn.Linear(embed_dim, num_kv_heads * self.head_dim, bias=True)
+        self.v_proj = nn.Linear(embed_dim, num_kv_heads * self.head_dim, bias=True)
         self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
     def forward(self, x, kv_cache=None, attn_mask=None):
         batch, seq_len = x.shape[:-1]
 
         q = self.q_proj(x)
-        k, v = self.kv_proj(x).split(self.num_kv_heads * self.head_dim, dim=-1)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
         q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim).transpose(1, 2)
         k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
         position = len(kv_cache[0]) if self.use_kv_cache else None
-        q = self.position_encoder(q, use_kv_cache=self.use_kv_cache, position=position)
-        k = self.position_encoder(k, use_kv_cache=self.use_kv_cache, position=position)
+        q = self.position_encoder(q.transpose(1, 2), use_kv_cache=self.use_kv_cache, position=position).transpose(1, 2)
+        k = self.position_encoder(k.transpose(1, 2), use_kv_cache=self.use_kv_cache, position=position).transpose(1, 2)
 
         if self.use_kv_cache:
             k = update_kv_cache(kv_cache, k, 0)
             v = update_kv_cache(kv_cache, v, 1)
 
-        # kv_cache_shape: [batch, num_kv_heads, seq_len, head_dim]
-        k = k.repeat_interleave(self.num_kv_groups, dim=1)
-        v = v.repeat_interleave(self.num_kv_groups, dim=1)
-        attn_weight = q @ k.transpose(2, 3) * self.attn_scale
-        if attn_mask is not None: attn_weight += attn_mask.to(dtype=attn_weight.dtype)
-        attn_weight = attn_weight.softmax(dim=-1)
-        o = attn_weight @ v
+        is_causal = attn_mask is None
+        o = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=is_causal,
+            enable_gqa=True,
+            scale=self.attn_scale,
+        )
         o = self.o_proj(o.transpose(1, 2).reshape(batch, seq_len, self.embed_dim))
         return o
 
@@ -146,20 +150,45 @@ class Qwen2Backbone(nn.Module):
         return output_embeds
 
 class Qwen2LM(nn.Module):
-    def __init__(
-        self, *, vocab_size, embed_dim, max_seq_len, padding_idx, num_hidden_layers, rms_norm_eps, rope_base,
-        num_attn_heads, num_kv_heads, intermediate_size, sliding_window, use_kv_cache=False,
-    ):
+    def __init__(self, config):
         super().__init__()
+        self.tie_word_embeddings = config.tie_word_embeddings
         self.backbone = Qwen2Backbone(
-            vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=padding_idx,
-            num_hidden_layers=num_hidden_layers, num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads,
-            rope_base=rope_base, rms_norm_eps=rms_norm_eps, intermediate_size=intermediate_size,
-            sliding_window=sliding_window, use_kv_cache=use_kv_cache,
+            vocab_size=config.vocab_size,
+            embed_dim=config.hidden_size,
+            max_seq_len=config.max_position_embeddings,
+            padding_idx=getattr(config, 'pad_token_id', 0),
+            num_hidden_layers=config.num_hidden_layers,
+            num_attn_heads=config.num_attention_heads,
+            num_kv_heads=config.num_key_value_heads,
+            rope_base=config.rope_theta,
+            rms_norm_eps=config.rms_norm_eps,
+            intermediate_size=config.intermediate_size,
+            sliding_window=config.sliding_window,
+            use_kv_cache=getattr(config, 'use_kv_cache', False),
         )
-        self.lm_head = nn.Linear(embed_dim, vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        if self.tie_word_embeddings:
+            self.lm_head.weight = self.backbone.token_embeds.weight
 
     def forward(self, input_ids, attn_mask=None):
         output_embeds = self.backbone(input_ids, attn_mask=attn_mask)
         logits = self.lm_head(output_embeds)
         return logits
+
+    def load_hf_state_dict(self, hf_state_dict):
+        REPLACEMENT_PATTERNS = [
+            (r'model\.embed_tokens', 'backbone.token_embeds'),
+            (r'model\.norm(?=\.|$)', 'backbone.norm'),
+            (r'model\.layers', 'backbone.layers'),
+            (r'self_attn\.', 'attn.'),
+            (r'input_layernorm', 'norm_1'),
+            (r'post_attention_layernorm', 'norm_2'),
+        ]
+        nnm_state_dict = {}
+        for hf_key, tensor in hf_state_dict.items():
+            nnm_key = hf_key
+            for pattern, replacement in REPLACEMENT_PATTERNS:
+                nnm_key = re.sub(pattern, replacement, nnm_key)
+            nnm_state_dict[nnm_key] = tensor
+        self.load_state_dict(nnm_state_dict)

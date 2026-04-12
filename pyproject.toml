@@ -27,7 +27,7 @@ dependencies = [
     "numpy",
     "torch",
     'fakeset',
-    'conippets>=0.1.8',
+    'conippets>=0.1.12',
 ]
 
 [project.urls]
@@ -41,9 +41,13 @@ packages = ["nnm"]
 
 [project.optional-dependencies]
 dev = [
-    "transformers==4.51.3",
+    "transformers==5.5.0",
     "pytest==8.3.4",
+    "black>=26.3.0",
 ]
+
+[tool.black]
+line-length = 128
 
 [tool.pytest.ini_options]
 minversion = "8.0"
