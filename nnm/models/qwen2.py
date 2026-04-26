@@ -1,7 +1,7 @@
 import torch, re
 from torch import nn
 from nnm.layers.rope import QwenRoPE
-from nnm.layers.norm import Qwen2RMSNorm
+from nnm.cache import KVCache
 from conippets.config import Config
 
 class Qwen2MLP(nn.Module):
@@ -18,13 +18,13 @@ class Qwen2MLP(nn.Module):
         return down_proj
 
 @torch.no_grad()
-def make_causal_attn_mask(attn_mask, kv_cache_len, sliding_window):
+def make_causal_attn_mask(attn_mask, cache_len, sliding_window):
     batch, seq_len = attn_mask.shape
     dtype_info = torch.finfo if attn_mask.dtype.is_floating_point else torch.iinfo
     inf_val = dtype_info(attn_mask.dtype).min
-    kv_len = seq_len + kv_cache_len
+    kv_len = seq_len + cache_len
     causal_attn_mask = torch.full((seq_len, kv_len), fill_value=inf_val)
-    query_position = torch.arange(kv_cache_len, kv_len)
+    query_position = torch.arange(cache_len, kv_len)
     key_position = torch.arange(kv_len)
     triu_attn_mask = query_position > key_position.reshape(-1, 1)
     if kv_len > sliding_window:
@@ -37,21 +37,15 @@ def make_causal_attn_mask(attn_mask, kv_cache_len, sliding_window):
     causal_attn_mask = causal_attn_mask.masked_fill(padding_mask, inf_val).unsqueeze(1)
     return causal_attn_mask
 
-def update_kv_cache(kv_cache, k_or_v, idx):
-    kv_cache[idx].append(k_or_v)
-    k_or_v = torch.cat(kv_cache[idx], dim=-2)
-    return k_or_v
-
 class Qwen2Attention(nn.Module):
-    def __init__(self, *, embed_dim, num_attn_heads, num_kv_heads, position_encoder, use_kv_cache=False):
+    def __init__(self, *, embed_dim, num_attn_heads, num_kv_heads, position_encoder, use_cache=False):
         super().__init__()
         assert embed_dim % num_attn_heads == 0
         self.embed_dim = embed_dim
         self.head_dim = embed_dim // num_attn_heads
         self.num_attn_heads = num_attn_heads
         self.num_kv_heads = num_kv_heads
-        self.num_kv_groups = self.num_attn_heads // self.num_kv_heads
-        self.use_kv_cache = use_kv_cache
+        self.use_cache = use_cache
         self.position_encoder = position_encoder
         self.attn_scale = self.head_dim ** -0.5
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
@@ -59,25 +53,37 @@ class Qwen2Attention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, num_kv_heads * self.head_dim, bias=True)
         self.o_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
-    def forward(self, x, kv_cache=None, attn_mask=None):
+    def forward(self, x, cache=None, attn_mask=None):
         batch, seq_len = x.shape[:-1]
 
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
-        q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim).transpose(1, 2)
-        k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim)
+        k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim)
         v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        position = len(kv_cache[0]) if self.use_kv_cache else None
-        q = self.position_encoder(q.transpose(1, 2), use_kv_cache=self.use_kv_cache, position=position).transpose(1, 2)
-        k = self.position_encoder(k.transpose(1, 2), use_kv_cache=self.use_kv_cache, position=position).transpose(1, 2)
+        use_cache = self.use_cache and cache is not None and not cache.is_empty()
+        position = cache.kv_len if use_cache else None
 
-        if self.use_kv_cache:
-            k = update_kv_cache(kv_cache, k, 0)
-            v = update_kv_cache(kv_cache, v, 1)
+        q = self.position_encoder(q, use_cache=use_cache, position=position)
+        k = self.position_encoder(k, use_cache=use_cache, position=position)
+        q, k = q.transpose(1, 2), k.transpose(1, 2)
 
-        is_causal = attn_mask is None
+        if self.use_cache and cache is not None:
+            cache_len = cache.kv_len
+            k, v = cache.update(k, v)
+            if attn_mask is None and seq_len > 1:
+                # Create causal mask for new tokens: new token i can see cache + new tokens [0, i]
+                kv_len = k.shape[-2]
+                mask = torch.full((seq_len, kv_len), float('-inf'), device=q.device, dtype=q.dtype)
+                for i in range(seq_len):
+                    mask[i, :cache_len + i + 1] = 0
+                attn_mask = mask.unsqueeze(0).unsqueeze(0)
+            is_causal = False
+        else:
+            is_causal = attn_mask is None
+
         o = torch.nn.functional.scaled_dot_product_attention(
             q, k, v,
             attn_mask=attn_mask,
@@ -91,22 +97,22 @@ class Qwen2Attention(nn.Module):
 
 class Qwen2DecoderLayer(nn.Module):
     def __init__(
-        self, *, position_encoder, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, eps, use_kv_cache=False,
+        self, *, position_encoder, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, eps, use_cache=False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.position_encoder = position_encoder
         self.attn = Qwen2Attention(
             embed_dim=embed_dim, num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads,
-            position_encoder=position_encoder, use_kv_cache=use_kv_cache,
+            position_encoder=position_encoder, use_cache=use_cache,
         )
         self.mlp = Qwen2MLP(embed_dim=embed_dim, intermediate_size=intermediate_size)
-        self.norm_1 = Qwen2RMSNorm(embed_dim=embed_dim, eps=eps)
-        self.norm_2 = Qwen2RMSNorm(embed_dim=embed_dim, eps=eps)
+        self.norm_1 = nn.RMSNorm(embed_dim, eps=eps, elementwise_affine=True)
+        self.norm_2 = nn.RMSNorm(embed_dim, eps=eps, elementwise_affine=True)
 
-    def forward(self, x, attn_mask=None, kv_cache=None):
+    def forward(self, x, attn_mask=None, cache=None):
         y = self.norm_1(x)
-        y = self.attn(y, attn_mask=attn_mask, kv_cache=kv_cache)
+        y = self.attn(y, cache=cache, attn_mask=attn_mask)
         x = x + y
 
         y = self.norm_2(x)
@@ -118,34 +124,34 @@ class Qwen2DecoderLayer(nn.Module):
 class Qwen2Backbone(nn.Module):
     def __init__(
         self, *, vocab_size, embed_dim, max_seq_len, padding_idx, num_hidden_layers, rms_norm_eps, rope_base,
-        num_attn_heads, num_kv_heads, intermediate_size, sliding_window, use_kv_cache=False,
+        num_attn_heads, num_kv_heads, intermediate_size, sliding_window, use_cache=False,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.head_dim = embed_dim // num_attn_heads
-        self.num_kv_groups = num_attn_heads // num_kv_heads
         self.sliding_window = sliding_window
         self.padding_idx = padding_idx
         self.num_hidden_layers = num_hidden_layers
+        self.use_cache = use_cache
         self.token_embeds = nn.Embedding(vocab_size, embed_dim, padding_idx=padding_idx)
         self.position_encoder = QwenRoPE(max_seq_len=max_seq_len, embed_dim=self.head_dim, base=rope_base)
         self.layers = nn.ModuleList(
             [Qwen2DecoderLayer(
                 position_encoder=self.position_encoder, embed_dim=embed_dim, intermediate_size=intermediate_size,
-                num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, eps=rms_norm_eps, use_kv_cache=use_kv_cache,
+                num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, eps=rms_norm_eps, use_cache=use_cache,
             ) for _ in range(num_hidden_layers)]
         )
-        self.norm = Qwen2RMSNorm(embed_dim, eps=rms_norm_eps)
-        self.kv_cache = [([], []) for _ in range(num_hidden_layers)]
+        self.norm = nn.RMSNorm(embed_dim, eps=rms_norm_eps, elementwise_affine=True)
+        self.caches = [KVCache() for _ in range(num_hidden_layers)] if use_cache else None
 
     def forward(self, input_ids, attn_mask=None):
-        input_embeds = self.token_embeds(input_ids)
-        kv_cache_len = len(self.kv_cache[0][0]) * self.num_kv_groups
-        if attn_mask is not None: attn_mask = make_causal_attn_mask(attn_mask, kv_cache_len, self.sliding_window)
-        output_embeds = input_embeds
-        for decoder_layer, kv_cache in zip(self.layers, self.kv_cache):
-            output_embeds = decoder_layer(output_embeds, attn_mask=attn_mask, kv_cache=kv_cache)
+        output_embeds = self.token_embeds(input_ids)
+        cache_len = self.caches[0].kv_len if self.use_cache and self.caches else 0
+        if attn_mask is not None:
+            attn_mask = make_causal_attn_mask(attn_mask, cache_len, self.sliding_window)
+        for decoder_layer, cache in zip(self.layers, self.caches or [None] * len(self.layers)):
+            output_embeds = decoder_layer(output_embeds, attn_mask=attn_mask, cache=cache)
         output_embeds = self.norm(output_embeds)
         return output_embeds
 
@@ -165,7 +171,7 @@ class Qwen2LM(nn.Module):
             rms_norm_eps=config.rms_norm_eps,
             intermediate_size=config.intermediate_size,
             sliding_window=config.sliding_window,
-            use_kv_cache=getattr(config, 'use_kv_cache', False),
+            use_cache=getattr(config, 'use_cache', False),
         )
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         if self.tie_word_embeddings:
@@ -175,6 +181,11 @@ class Qwen2LM(nn.Module):
         output_embeds = self.backbone(input_ids, attn_mask=attn_mask)
         logits = self.lm_head(output_embeds)
         return logits
+
+    def clear_cache(self):
+        if self.backbone.caches:
+            for cache in self.backbone.caches:
+                cache.clear()
 
     def load_hf_state_dict(self, hf_state_dict):
         REPLACEMENT_PATTERNS = [

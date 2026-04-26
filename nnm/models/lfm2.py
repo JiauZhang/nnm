@@ -1,20 +1,7 @@
 import torch, re
 from torch import nn
 from nnm.layers.rope import QwenRoPE
-
-
-class Lfm2RMSNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, hidden_states):
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states.to(input_dtype)
+from nnm.cache import KVCache, StateCache
 
 
 class Lfm2MLP(nn.Module):
@@ -41,30 +28,8 @@ class Lfm2MLP(nn.Module):
         return self.w2(nn.functional.silu(self.w1(x)) * self.w3(x))
 
 
-def rotate_half(x):
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
-def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
-
-
-def repeat_kv(hidden_states, n_rep):
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
-
-
 class Lfm2Attention(nn.Module):
-    def __init__(self, *, config):
+    def __init__(self, *, config, position_encoder):
         super().__init__()
         hidden_size = config.hidden_size
         num_attention_heads = config.num_attention_heads
@@ -77,38 +42,48 @@ class Lfm2Attention(nn.Module):
         self.num_key_value_heads = num_key_value_heads
         self.num_key_value_groups = num_attention_heads // num_key_value_heads
         self.scaling = self.head_dim**-0.5
-        self.use_kv_cache = getattr(config, "use_kv_cache", False)
+        self.use_cache = getattr(config, "use_cache", False)
+        self.position_encoder = position_encoder
 
         norm_eps = getattr(config, "norm_eps", 1e-6)
         self.q_proj = nn.Linear(hidden_size, num_attention_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size, num_key_value_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, num_key_value_heads * self.head_dim, bias=False)
         self.out_proj = nn.Linear(num_attention_heads * self.head_dim, hidden_size, bias=False)
-        self.q_layernorm = Lfm2RMSNorm(self.head_dim, eps=norm_eps)
-        self.k_layernorm = Lfm2RMSNorm(self.head_dim, eps=norm_eps)
+        self.q_layernorm = nn.RMSNorm(self.head_dim, eps=norm_eps, elementwise_affine=True)
+        self.k_layernorm = nn.RMSNorm(self.head_dim, eps=norm_eps, elementwise_affine=True)
 
-    def forward(self, hidden_states, position_embeddings=None, attn_mask=None, kv_cache=None):
+    def forward(self, hidden_states, attn_mask=None, cache=None):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_layernorm(self.q_proj(hidden_states).view(*hidden_shape)).transpose(1, 2)
-        key_states = self.k_layernorm(self.k_proj(hidden_states).view(*hidden_shape)).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(*hidden_shape).transpose(1, 2)
+        query_states = self.q_layernorm(self.q_proj(hidden_states).view(*hidden_shape))
+        key_states = self.k_layernorm(self.k_proj(hidden_states).view(*hidden_shape))
+        value_states = self.v_proj(hidden_states).view(*hidden_shape)
 
-        if position_embeddings is not None:
-            cos, sin = position_embeddings
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        use_cache = self.use_cache and cache is not None and not cache.is_empty()
+        position = cache.kv_len if use_cache else None
 
-        if self.use_kv_cache and kv_cache is not None:
-            kv_cache[0].append(key_states)
-            kv_cache[1].append(value_states)
-            key_states = torch.cat(kv_cache[0], dim=-2)
-            value_states = torch.cat(kv_cache[1], dim=-2)
+        query_states = self.position_encoder(query_states, use_cache=use_cache, position=position)
+        key_states = self.position_encoder(key_states, use_cache=use_cache, position=position)
+        query_states = query_states.transpose(1, 2)
+        key_states = key_states.transpose(1, 2)
+        value_states = value_states.transpose(1, 2)
 
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
+        if self.use_cache and cache is not None:
+            cache_len = cache.kv_len
+            seq_len = query_states.shape[-2]
+            key_states, value_states = cache.update(key_states, value_states)
+            if attn_mask is None and seq_len > 1:
+                kv_len = key_states.shape[-2]
+                mask = torch.full((seq_len, kv_len), float('-inf'), device=query_states.device, dtype=query_states.dtype)
+                for i in range(seq_len):
+                    mask[i, :cache_len + i + 1] = 0
+                attn_mask = mask.unsqueeze(0).unsqueeze(0)
+            is_causal = False
+        else:
+            is_causal = attn_mask is None
 
-        is_causal = attn_mask is None
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
             key_states,
@@ -131,7 +106,7 @@ class Lfm2ShortConv(nn.Module):
         self.hidden_size = hidden_size
         self.L_cache = getattr(config, "conv_L_cache", 3)
         self.bias = getattr(config, "conv_bias", False)
-        self.use_kv_cache = getattr(config, "use_kv_cache", False)
+        self.use_cache = getattr(config, "use_cache", False)
 
         self.conv = nn.Conv1d(
             in_channels=hidden_size,
@@ -144,7 +119,7 @@ class Lfm2ShortConv(nn.Module):
         self.in_proj = nn.Linear(hidden_size, 3 * hidden_size, bias=self.bias)
         self.out_proj = nn.Linear(hidden_size, hidden_size, bias=self.bias)
 
-    def forward(self, hidden_states, kv_cache=None, attn_mask=None):
+    def forward(self, hidden_states, cache=None, attn_mask=None):
         seqlen = hidden_states.shape[1]
 
         BCx = self.in_proj(hidden_states).transpose(-1, -2)
@@ -152,23 +127,16 @@ class Lfm2ShortConv(nn.Module):
 
         Bx = B * x
 
-        if self.use_kv_cache and kv_cache is not None and len(kv_cache) > 0:
-            conv_state = kv_cache[0]
-            if conv_state is not None and conv_state.shape[-1] > 0:
-                conv_state = torch.cat([conv_state, Bx], dim=-1)
-                conv_state = conv_state[..., -self.L_cache :]
-            else:
-                conv_state = nn.functional.pad(Bx, (self.L_cache - Bx.shape[-1], 0))
-            kv_cache[0] = conv_state
-            conv_out = torch.sum(conv_state.to(Bx.device) * self.conv.weight[:, 0, :], dim=-1)
+        if self.use_cache and cache is not None and not cache.is_empty():
+            conv_state = cache.update(Bx)
+            conv_out = torch.sum(conv_state * self.conv.weight[:, 0, :], dim=-1)
             if self.bias:
                 conv_out += self.conv.bias
             conv_out = conv_out.unsqueeze(-1)
         else:
-            if self.use_kv_cache and kv_cache is not None:
-                conv_state = nn.functional.pad(Bx, (self.L_cache - Bx.shape[-1], 0))
-                kv_cache[0] = conv_state
             conv_out = self.conv(Bx)[..., :seqlen]
+            if self.use_cache and cache is not None:
+                cache.update(Bx)
 
         y = C * conv_out
         y = y.transpose(-1, -2).contiguous()
@@ -182,10 +150,10 @@ class Lfm2DecoderLayer(nn.Module):
         self.is_attention_layer = is_attention_layer
         hidden_size = config.hidden_size
         norm_eps = getattr(config, "norm_eps", 1e-6)
-        use_kv_cache = getattr(config, "use_kv_cache", False)
+        use_cache = getattr(config, "use_cache", False)
 
         if is_attention_layer:
-            self.self_attn = Lfm2Attention(config=config)
+            self.self_attn = Lfm2Attention(config=config, position_encoder=position_encoder)
         else:
             self.conv = Lfm2ShortConv(config=config)
         self.feed_forward = Lfm2MLP(
@@ -195,22 +163,21 @@ class Lfm2DecoderLayer(nn.Module):
             block_ffn_dim_multiplier=getattr(config, "block_ffn_dim_multiplier", 1.0),
             block_multiple_of=getattr(config, "block_multiple_of", 256),
         )
-        self.operator_norm = Lfm2RMSNorm(hidden_size, eps=norm_eps)
-        self.ffn_norm = Lfm2RMSNorm(hidden_size, eps=norm_eps)
+        self.operator_norm = nn.RMSNorm(hidden_size, eps=norm_eps, elementwise_affine=True)
+        self.ffn_norm = nn.RMSNorm(hidden_size, eps=norm_eps, elementwise_affine=True)
 
-    def forward(self, hidden_states, position_embeddings=None, attn_mask=None, kv_cache=None):
+    def forward(self, hidden_states, attn_mask=None, cache=None):
         residual = hidden_states
         if self.is_attention_layer:
             hidden_states = self.self_attn(
                 hidden_states=self.operator_norm(hidden_states),
-                position_embeddings=position_embeddings,
                 attn_mask=attn_mask,
-                kv_cache=kv_cache,
+                cache=cache,
             )
         else:
             hidden_states = self.conv(
                 hidden_states=self.operator_norm(hidden_states),
-                kv_cache=kv_cache,
+                cache=cache,
                 attn_mask=attn_mask,
             )
         hidden_states = hidden_states + residual
@@ -227,6 +194,7 @@ class Lfm2Backbone(nn.Module):
         self.head_dim = config.hidden_size // config.num_attention_heads
         self.num_hidden_layers = config.num_hidden_layers
         self.padding_idx = getattr(config, "pad_token_id", 0)
+        self.use_cache = getattr(config, "use_cache", False)
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=self.padding_idx)
         rope_theta = getattr(config, "rope_theta", 1000000.0)
@@ -247,41 +215,25 @@ class Lfm2Backbone(nn.Module):
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
-        self.embedding_norm = Lfm2RMSNorm(config.hidden_size, eps=getattr(config, "norm_eps", 1e-5))
-        self.kv_cache = [
-            ([torch.empty(0)] if self.layer_types[i] == "conv" else ([], [])) for i in range(config.num_hidden_layers)
-        ]
+        self.embedding_norm = nn.RMSNorm(config.hidden_size, eps=getattr(config, "norm_eps", 1e-5), elementwise_affine=True)
+        if self.use_cache:
+            self.caches = []
+            for layer_type in self.layer_types:
+                if layer_type == "full_attention":
+                    self.caches.append(KVCache())
+                else:
+                    self.caches.append(StateCache(state_size=getattr(config, "conv_L_cache", 3)))
+        else:
+            self.caches = None
 
     def forward(self, input_ids, attn_mask=None):
-        input_embeds = self.embed_tokens(input_ids)
-        batch, seq_len = input_ids.shape
-        position_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, -1)
+        hidden_states = self.embed_tokens(input_ids)
 
-        # Compute cos/sin like transformers RoPE
-        # inv_freq shape: [head_dim // 2]
-        inv_freq = 1.0 / (
-            self.position_encoder.base
-            ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32, device=input_ids.device) / self.head_dim)
-        )
-        # inv_freq_expanded: [batch, head_dim // 2, 1]
-        inv_freq_expanded = inv_freq[None, :, None].expand(batch, -1, 1)
-        # position_ids_expanded: [batch, 1, seq_len]
-        position_ids_expanded = position_ids[:, None, :].float()
-        # freqs: [batch, seq_len, head_dim // 2]
-        freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-        # emb: [batch, seq_len, head_dim]
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos()
-        sin = emb.sin()
-
-        hidden_states = input_embeds
-
-        for decoder_layer, kv_cache in zip(self.layers, self.kv_cache):
+        for decoder_layer, cache in zip(self.layers, self.caches or [None] * len(self.layers)):
             hidden_states = decoder_layer(
                 hidden_states,
-                position_embeddings=(cos, sin),
                 attn_mask=attn_mask,
-                kv_cache=kv_cache,
+                cache=cache,
             )
 
         hidden_states = self.embedding_norm(hidden_states)
@@ -302,12 +254,16 @@ class Lfm2LM(nn.Module):
         logits = self.lm_head(output_embeds)
         return logits
 
+    def clear_cache(self):
+        if self.backbone.caches:
+            for cache in self.backbone.caches:
+                cache.clear()
+
     def load_hf_state_dict(self, hf_state_dict):
         REPLACEMENT_PATTERNS = [
             (r"^model\.embed_tokens", "backbone.embed_tokens"),
             (r"^model\.embedding_norm", "backbone.embedding_norm"),
             (r"^model\.layers", "backbone.layers"),
-            (r"^lm_head", "lm_head"),
         ]
         nnm_state_dict = {}
         for hf_key, tensor in hf_state_dict.items():

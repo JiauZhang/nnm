@@ -1,4 +1,5 @@
 import torch, pytest, random, os
+from torch import nn
 from transformers.models.qwen2 import modeling_qwen2 as qwen2
 from transformers.models.qwen2 import configuration_qwen2 as cfg
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
@@ -7,7 +8,6 @@ from nnm.models.qwen2 import (
     Qwen2Attention, Qwen2MLP, Qwen2DecoderLayer, Qwen2Backbone,
     Qwen2LM, make_causal_attn_mask,
 )
-from nnm.layers.norm import Qwen2RMSNorm
 from conippets.config import Config
 
 def init_linear_weight(src, dst, bias=True):
@@ -96,7 +96,7 @@ def test_qwen2_attn(batch, seq_len, max_seq_len, embed_dim, num_attn_heads, num_
 @torch.no_grad()
 def test_qwen2_rms_norm(batch, seq_len, embed_dim, eps):
     hf_norm = qwen2.Qwen2RMSNorm(embed_dim, eps=eps)
-    nnm_norm = Qwen2RMSNorm(embed_dim, eps=eps)
+    nnm_norm = nn.RMSNorm(embed_dim, eps=eps, elementwise_affine=True)
     assert nnm_norm.weight.shape == hf_norm.weight.shape
 
     nnm_norm.weight = torch.nn.Parameter(torch.randn(*nnm_norm.weight.shape))
@@ -246,7 +246,7 @@ def test_qwen2_lm(
     nnm_config = Config(
         vocab_size=vocab_size, hidden_size=embed_dim, max_position_embeddings=max_seq_len, pad_token_id=0, rms_norm_eps=eps,
         num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, rope_theta=base, intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window, use_kv_cache=False, tie_word_embeddings=False,
+        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window, use_cache=False, tie_word_embeddings=False,
     )
     nnm_lm = Qwen2LM(nnm_config)
     hf_config = cfg.Qwen2Config(
@@ -272,7 +272,7 @@ def test_qwen2_lm(
     nnm_config = Config(
         vocab_size=vocab_size, hidden_size=embed_dim, max_position_embeddings=max_seq_len, pad_token_id=0, rms_norm_eps=eps,
         num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, rope_theta=base, intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window, use_kv_cache=True, tie_word_embeddings=False,
+        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window, use_cache=True, tie_word_embeddings=False,
     )
     nnm_lm = Qwen2LM(nnm_config)
     hf_config.use_cache = True
@@ -285,12 +285,20 @@ def test_qwen2_lm(
         assert nnm_o.shape == hf_o.shape
 
 
+@pytest.mark.parametrize(
+    "prompts, use_cache",
+    [
+        (["Hello, how are you?", " What about Python?"], False),
+        (["Hello, how are you?", " What about Python?"], True),
+        (["Hello", " Tell me more."], False),
+        (["Hello", " Tell me more."], True),
+        (["What is the capital of France?", " What about Germany?"], False),
+        (["What is the capital of France?", " What about Germany?"], True),
+    ],
+)
 @torch.no_grad()
-def test_qwen2_pretrained_model(model_path):
-    if not model_path:
-        pytest.skip("Model path not provided, use --model-path to specify")
-    if not os.path.exists(model_path):
-        pytest.skip(f"Model path not found: {model_path}")
+def test_qwen2_pretrained(model_path, prompts, use_cache):
+    assert model_path is not None
 
     config = AutoConfig.from_pretrained(model_path)
 
@@ -313,79 +321,74 @@ def test_qwen2_pretrained_model(model_path):
         intermediate_size=config.intermediate_size,
         sliding_window=config.sliding_window if config.sliding_window is not None else config.max_position_embeddings,
         num_hidden_layers=config.num_hidden_layers,
-        use_kv_cache=False,
+        use_cache=use_cache,
         tie_word_embeddings=config.tie_word_embeddings,
     )
     nnm_model = Qwen2LM(nnm_config)
     nnm_model.load_hf_state_dict(hf_model.state_dict())
     nnm_model.eval()
 
-    text = "Hello, how are you?"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    inputs = tokenizer(text, return_tensors="pt")
-    input_ids = inputs['input_ids']
 
-    hf_logits = hf_model(input_ids).logits
-    nnm_logits = nnm_model(input_ids)
+    if not use_cache:
+        input_ids = tokenizer(prompts[0], return_tensors="pt")["input_ids"]
+        hf_logits = hf_model(input_ids).logits
+        nnm_logits = nnm_model(input_ids)
+        torch.testing.assert_close(nnm_logits, hf_logits, atol=1e-4, rtol=1e-4)
+        assert tokenizer.decode(hf_logits.argmax(dim=-1)[0]) == tokenizer.decode(nnm_logits.argmax(dim=-1)[0])
 
-    assert hf_logits.shape == nnm_logits.shape
+    max_new_tokens = 10
 
-    torch.testing.assert_close(nnm_logits, hf_logits, atol=1e-4, rtol=1e-5)
-
-    hf_pred = tokenizer.decode(hf_logits.argmax(dim=-1)[0])
-    nnm_pred = tokenizer.decode(nnm_logits.argmax(dim=-1)[0])
-    assert hf_pred == nnm_pred, f"Predictions don't match: hf='{hf_pred}', nnm='{nnm_pred}'"
-
-
-@torch.no_grad()
-def test_qwen2_pretrained_generation(model_path):
-    if not model_path:
-        pytest.skip("Model path not provided, use --model-path to specify")
-    if not os.path.exists(model_path):
-        pytest.skip(f"Model path not found: {model_path}")
-
-    config = AutoConfig.from_pretrained(model_path)
-
-    hf_model = AutoModelForCausalLM.from_pretrained(
+    hf_model_gen = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.float32,
         device_map="cpu",
     )
-    hf_model.eval()
+    hf_model_gen.eval()
+    hf_model_gen.config._attn_implementation = "eager"
+    hf_model_gen.config.use_cache = use_cache
 
-    nnm_config = Config(
-        vocab_size=config.vocab_size,
-        hidden_size=config.hidden_size,
-        max_position_embeddings=config.max_position_embeddings,
-        pad_token_id=config.pad_token_id if config.pad_token_id is not None else 0,
-        rms_norm_eps=config.rms_norm_eps,
-        rope_theta=config.rope_parameters['rope_theta'],
-        num_attention_heads=config.num_attention_heads,
-        num_key_value_heads=config.num_key_value_heads,
-        intermediate_size=config.intermediate_size,
-        sliding_window=config.sliding_window if config.sliding_window is not None else config.max_position_embeddings,
-        num_hidden_layers=config.num_hidden_layers,
-        use_kv_cache=False,
-        tie_word_embeddings=config.tie_word_embeddings,
-    )
-    nnm_model = Qwen2LM(nnm_config)
-    nnm_model.load_hf_state_dict(hf_model.state_dict())
-    nnm_model.eval()
+    hf_input_ids = tokenizer(prompts[0], return_tensors="pt")["input_ids"]
+    nnm_input_ids = hf_input_ids.clone()
+    hf_past_key_values = None
 
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    for turn_idx, prompt in enumerate(prompts):
+        if turn_idx > 0:
+            input_ids = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
+            hf_input_ids = torch.cat([hf_input_ids, input_ids], dim=1)
+            nnm_input_ids = torch.cat([nnm_input_ids, input_ids], dim=1)
+        else:
+            input_ids = hf_input_ids
 
-    prompt = "Hello"
-    inputs = tokenizer(prompt, return_tensors="pt")
-    input_ids = inputs['input_ids']
+        if use_cache:
+            hf_out = hf_model_gen(input_ids, past_key_values=hf_past_key_values, use_cache=True)
+            hf_past_key_values = hf_out.past_key_values
+            hf_logits = hf_out.logits
+            logits = nnm_model(input_ids)
+        else:
+            hf_out = hf_model_gen(hf_input_ids, use_cache=False)
+            hf_logits = hf_out.logits
+            logits = nnm_model(nnm_input_ids)
 
-    hf_output = hf_model.generate(input_ids, max_new_tokens=5, do_sample=False)
-    hf_text = tokenizer.decode(hf_output[0])
-
-    nnm_input_ids = input_ids.clone()
-    for _ in range(5):
-        logits = nnm_model(nnm_input_ids)
-        next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        next_token = hf_logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        hf_input_ids = torch.cat([hf_input_ids, next_token], dim=1)
         nnm_input_ids = torch.cat([nnm_input_ids, next_token], dim=1)
-    nnm_text = tokenizer.decode(nnm_input_ids[0])
 
+        for _ in range(1, max_new_tokens):
+            if use_cache:
+                hf_out = hf_model_gen(hf_input_ids[:, -1:], past_key_values=hf_past_key_values, use_cache=True)
+                hf_past_key_values = hf_out.past_key_values
+                hf_logits = hf_out.logits
+                logits = nnm_model(nnm_input_ids[:, -1:])
+            else:
+                hf_out = hf_model_gen(hf_input_ids, use_cache=False)
+                hf_logits = hf_out.logits
+                logits = nnm_model(nnm_input_ids)
+
+            next_token = hf_logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            hf_input_ids = torch.cat([hf_input_ids, next_token], dim=1)
+            nnm_input_ids = torch.cat([nnm_input_ids, next_token], dim=1)
+
+    hf_text = tokenizer.decode(hf_input_ids[0])
+    nnm_text = tokenizer.decode(nnm_input_ids[0])
     assert hf_text == nnm_text, f"Generation doesn't match: hf='{hf_text}', nnm='{nnm_text}'"
