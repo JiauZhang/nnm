@@ -3,6 +3,8 @@ from torch import nn
 from nnm.layers.rope import QwenRoPE
 from nnm.cache import KVCache
 from conippets.config import Config
+from nnm.backends.sdpa import scaled_dot_product_attention
+
 
 class Qwen2MLP(nn.Module):
     def __init__(self, *, embed_dim, intermediate_size):
@@ -84,7 +86,7 @@ class Qwen2Attention(nn.Module):
         else:
             is_causal = attn_mask is None
 
-        o = torch.nn.functional.scaled_dot_product_attention(
+        o = scaled_dot_product_attention(
             q, k, v,
             attn_mask=attn_mask,
             dropout_p=0.0,

@@ -2,6 +2,7 @@ import torch, re
 from torch import nn
 from nnm.layers.rope import QwenRoPE
 from nnm.cache import KVCache, StateCache
+from nnm.backends.sdpa import scaled_dot_product_attention
 
 
 class Lfm2MLP(nn.Module):
@@ -84,7 +85,7 @@ class Lfm2Attention(nn.Module):
         else:
             is_causal = attn_mask is None
 
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
+        attn_output = scaled_dot_product_attention(
             query_states,
             key_states,
             value_states,
