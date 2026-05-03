@@ -61,8 +61,8 @@ class Qwen2Attention(nn.Module):
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
-        q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim)
-        k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim)
+        q = q.reshape(batch, seq_len, self.num_attn_heads, self.head_dim).transpose(1, 2)
+        k = k.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = v.reshape(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
         use_cache = self.use_cache and cache is not None and not cache.is_empty()
@@ -70,7 +70,6 @@ class Qwen2Attention(nn.Module):
 
         q = self.position_encoder(q, use_cache=use_cache, position=position)
         k = self.position_encoder(k, use_cache=use_cache, position=position)
-        q, k = q.transpose(1, 2), k.transpose(1, 2)
 
         if self.use_cache and cache is not None:
             cache_len = cache.kv_len

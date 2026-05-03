@@ -58,18 +58,15 @@ class Lfm2Attention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_layernorm(self.q_proj(hidden_states).view(*hidden_shape))
-        key_states = self.k_layernorm(self.k_proj(hidden_states).view(*hidden_shape))
-        value_states = self.v_proj(hidden_states).view(*hidden_shape)
+        query_states = self.q_layernorm(self.q_proj(hidden_states).view(*hidden_shape)).transpose(1, 2)
+        key_states = self.k_layernorm(self.k_proj(hidden_states).view(*hidden_shape)).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(*hidden_shape).transpose(1, 2)
 
         use_cache = self.use_cache and cache is not None and not cache.is_empty()
         position = cache.kv_len if use_cache else None
 
         query_states = self.position_encoder(query_states, use_cache=use_cache, position=position)
         key_states = self.position_encoder(key_states, use_cache=use_cache, position=position)
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
 
         if self.use_cache and cache is not None:
             cache_len = cache.kv_len
