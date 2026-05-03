@@ -1,4 +1,5 @@
 import math, torch
+from functools import lru_cache
 from torch import nn
 
 
@@ -10,7 +11,7 @@ def get_seq_idx(seq_len, use_cache=False, position=None):
     return seq_idx
 
 
-class RoPE(nn.Module):
+class BaseRoPE(nn.Module):
     def __init__(self, *, max_seq_len, embed_dim, base=10000):
         super().__init__()
         assert (embed_dim % 2) == 0, 'embed_dim must be divided by 2'
@@ -19,6 +20,20 @@ class RoPE(nn.Module):
         self.base = base
         self.precompute()
 
+    @torch.no_grad()
+    def precompute(self):
+        raise NotImplementedError
+
+    @lru_cache(maxsize=128)
+    def _get_pe(self, seq_len, use_cache=False, position=None):
+        seq_idx = get_seq_idx(seq_len, use_cache, position)
+        return self.sin[seq_idx, :], self.cos[seq_idx, :]
+
+    def forward(self, x, use_cache=False, position=None):
+        raise NotImplementedError
+
+
+class RoPE(BaseRoPE):
     @torch.no_grad()
     def precompute(self):
         theta = 1.0 / (self.base ** (torch.arange(0, self.embed_dim, 2, dtype=torch.float64) / self.embed_dim))
@@ -34,22 +49,12 @@ class RoPE(nn.Module):
     def forward(self, x, use_cache=False, position=None):
         shape = x.shape
         assert shape[-1] == self.embed_dim
-        seq_idx = get_seq_idx(shape[-2], use_cache, position)
-        sin_pe = self.sin[seq_idx, :]
-        cos_pe = self.cos[seq_idx, :]
+        sin_pe, cos_pe = self._get_pe(shape[-2], use_cache, position)
         y = x * cos_pe + x.reshape(-1, 2).flip(dims=[-1]).reshape(shape) * sin_pe
         return y
 
 
-class QwenRoPE(nn.Module):
-    def __init__(self, *, max_seq_len, embed_dim, base=10000):
-        super().__init__()
-        assert (embed_dim % 2) == 0, 'embed_dim must be divided by 2'
-        self.max_seq_len = max_seq_len
-        self.embed_dim = embed_dim
-        self.base = base
-        self.precompute()
-
+class QwenRoPE(BaseRoPE):
     @torch.no_grad()
     def precompute(self):
         theta = 1.0 / (self.base ** (torch.arange(0, self.embed_dim, 2, dtype=torch.float64) / self.embed_dim))
@@ -62,9 +67,7 @@ class QwenRoPE(nn.Module):
     def forward(self, x, use_cache=False, position=None):
         shape = x.shape
         assert shape[-1] == self.embed_dim
-        seq_idx = get_seq_idx(shape[-2], use_cache, position)
-        sin_pe = self.sin[seq_idx, :]
-        cos_pe = self.cos[seq_idx, :]
+        sin_pe, cos_pe = self._get_pe(shape[-2], use_cache, position)
         half_embed_dim = shape[-1] // 2
         x1 = x[..., :half_embed_dim]
         x2 = x[..., half_embed_dim:]
@@ -96,17 +99,12 @@ def get_temperature(scale=1):
     return 0.1 * math.log(scale) + 1.0
 
 
-class YaRN(nn.Module):
+class YaRN(BaseRoPE):
     def __init__(self, *, max_seq_len, embed_dim, base=10000, scale=1, alpha=1, beta=32):
-        super().__init__()
-        assert (embed_dim % 2) == 0, 'embed_dim must be divided by 2'
-        self.max_seq_len = max_seq_len
-        self.embed_dim = embed_dim
-        self.base = base
         self.scale = scale
         self.alpha = alpha
         self.beta = beta
-        self.precompute()
+        super().__init__(max_seq_len=max_seq_len, embed_dim=embed_dim, base=base)
 
     @torch.no_grad()
     def precompute(self):
@@ -128,9 +126,7 @@ class YaRN(nn.Module):
     def forward(self, x, use_cache=False, position=None):
         shape = x.shape
         assert shape[-1] == self.embed_dim
-        seq_idx = get_seq_idx(shape[-2], use_cache, position)
-        sin_pe = self.sin[seq_idx, :]
-        cos_pe = self.cos[seq_idx, :]
+        sin_pe, cos_pe = self._get_pe(shape[-2], use_cache, position)
         half_embed_dim = shape[-1] // 2
         x1 = x[..., :half_embed_dim]
         x2 = x[..., half_embed_dim:]
