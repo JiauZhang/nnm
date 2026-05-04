@@ -10,6 +10,6 @@ def pytest_addoption(parser):
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def model_path(request):
     return request.config.getoption("--model-path")
