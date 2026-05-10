@@ -14,19 +14,15 @@ from .text_encoder import TextEncoder
 
 
 class KittenTTS(PretrainedModel):
-    def __init__(self, config, model_path=None, voices_path=None):
+    def __init__(self, config, voices_path=None):
         super().__init__()
         self.config = config
-        self.model_path = model_path
 
         self.bert = AlbertEncoder(config.albert)
         self.text_encoder = TextEncoder(config)
         self.predictor = Predictor(config)
         self.decoder = KittenDecoder(config)
         self.generator = KittenGenerator(config)
-
-        if model_path is not None:
-            self._load_weights(model_path)
 
         self._voices = None
         self._speed_priors = config.speed_priors.copy()
@@ -37,11 +33,18 @@ class KittenTTS(PretrainedModel):
 
     @classmethod
     def from_pretrained(cls, pretrained_path):
+        config_path = os.path.join(pretrained_path, 'config.json')
+        config = Config.from_json(config_path)
+
+        weight_path = getattr(config, '_nnm_weight_path', 'model.pth')
+        model_path = os.path.join(pretrained_path, weight_path)
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f'Weight file not found: {model_path}')
+
         voices_path = os.path.join(pretrained_path, 'voices.npz')
-        return super().from_pretrained(
-            pretrained_path,
-            voices_path=voices_path if os.path.exists(voices_path) else None,
-        )
+        model = cls(config, voices_path=voices_path if os.path.exists(voices_path) else None)
+        model._load_weights(model_path)
+        return model
 
     def load_voices(self, voices_path):
         data = np.load(voices_path)

@@ -369,37 +369,16 @@ def test_lfm2_lm(
 def test_lfm2_pretrained(model_path, prompts, use_cache):
     assert model_path is not None
 
-    config = AutoConfig.from_pretrained(model_path)
-    rope_theta = getattr(config, "rope_theta", 1000000.0)
-
-    hf_model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float32, device_map="cpu")
-    hf_model.eval()
-
-    nnm_config = Config(
-        vocab_size=config.vocab_size,
-        hidden_size=config.hidden_size,
-        max_position_embeddings=config.max_position_embeddings,
-        pad_token_id=config.pad_token_id or 0,
-        num_hidden_layers=config.num_hidden_layers,
-        intermediate_size=config.intermediate_size,
-        num_attention_heads=config.num_attention_heads,
-        num_key_value_heads=config.num_key_value_heads,
-        rope_theta=rope_theta,
-        norm_eps=config.norm_eps,
-        full_attn_idxs=config.full_attn_idxs,
-        conv_L_cache=config.conv_L_cache,
-        conv_bias=config.conv_bias,
-        block_auto_adjust_ff_dim=config.block_auto_adjust_ff_dim,
-        block_ffn_dim_multiplier=config.block_ffn_dim_multiplier,
-        block_multiple_of=config.block_multiple_of,
-        tie_word_embeddings=config.tie_word_embeddings,
-        use_cache=use_cache,
-    )
-    nnm_model = Lfm2LM(nnm_config)
-    nnm_model.load_hf_state_dict(hf_model.state_dict())
+    nnm_model = Lfm2LM.from_pretrained(model_path)
     nnm_model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    weight_repo = getattr(nnm_model.config, '_nnm_weight_repo', model_path)
+    weight_repo = os.path.expanduser(weight_repo)
+
+    hf_model = AutoModelForCausalLM.from_pretrained(weight_repo, torch_dtype=torch.float32, device_map="cpu")
+    hf_model.eval()
+
+    tokenizer = AutoTokenizer.from_pretrained(weight_repo)
     input_ids = tokenizer(prompts[0], return_tensors="pt")["input_ids"]
 
     hf_logits = hf_model(input_ids).logits

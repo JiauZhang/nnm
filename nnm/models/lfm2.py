@@ -1,8 +1,9 @@
-import torch, re
+import torch
 from torch import nn
 from nnm.layers.rope import QwenRoPE
 from nnm.cache import KVCache, StateCache
 from nnm.backends.sdpa import scaled_dot_product_attention
+from nnm.models.pretrained import PretrainedModel
 
 
 class Lfm2MLP(nn.Module):
@@ -154,9 +155,10 @@ class Lfm2DecoderLayer(nn.Module):
             self.self_attn = Lfm2Attention(config=config, position_encoder=position_encoder)
         else:
             self.conv = Lfm2ShortConv(config=config)
+        intermediate_size = getattr(config, "intermediate_size", None) or getattr(config, "block_ff_dim", config.hidden_size * 4)
         self.feed_forward = Lfm2MLP(
             hidden_size=hidden_size,
-            intermediate_size=getattr(config, "intermediate_size", config.hidden_size * 4),
+            intermediate_size=intermediate_size,
             block_auto_adjust_ff_dim=getattr(config, "block_auto_adjust_ff_dim", True),
             block_ffn_dim_multiplier=getattr(config, "block_ffn_dim_multiplier", 1.0),
             block_multiple_of=getattr(config, "block_multiple_of", 256),
@@ -238,35 +240,26 @@ class Lfm2Backbone(nn.Module):
         return hidden_states
 
 
-class Lfm2LM(nn.Module):
+class Lfm2LM(PretrainedModel):
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
         self.backbone = Lfm2Backbone(config)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         if self.tie_word_embeddings:
-            self.lm_head.weight = self.backbone.embed_tokens.weight
+            self.lm_head = None
+        else:
+            self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def forward(self, input_ids, attn_mask=None):
         output_embeds = self.backbone(input_ids, attn_mask=attn_mask)
-        logits = self.lm_head(output_embeds)
+        if self.lm_head is not None:
+            logits = self.lm_head(output_embeds)
+        else:
+            logits = torch.matmul(output_embeds, self.backbone.embed_tokens.weight.t())
         return logits
 
     def clear_cache(self):
         if self.backbone.caches:
             for cache in self.backbone.caches:
                 cache.clear()
-
-    def load_hf_state_dict(self, hf_state_dict):
-        REPLACEMENT_PATTERNS = [
-            (r"^model\.embed_tokens", "backbone.embed_tokens"),
-            (r"^model\.embedding_norm", "backbone.embedding_norm"),
-            (r"^model\.layers", "backbone.layers"),
-        ]
-        nnm_state_dict = {}
-        for hf_key, tensor in hf_state_dict.items():
-            nnm_key = hf_key
-            for pattern, replacement in REPLACEMENT_PATTERNS:
-                nnm_key = re.sub(pattern, replacement, nnm_key)
-            nnm_state_dict[nnm_key] = tensor
-        self.load_state_dict(nnm_state_dict)
