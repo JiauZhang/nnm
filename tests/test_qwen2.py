@@ -300,35 +300,20 @@ def test_qwen2_lm(
 def test_qwen2_pretrained(model_path, prompts, use_cache):
     assert model_path is not None
 
-    config = AutoConfig.from_pretrained(model_path)
+    nnm_model = Qwen2LM.from_pretrained(model_path)
+    nnm_model.eval()
+
+    weight_repo = getattr(nnm_model.config, '_nnm_weight_repo', model_path)
+    weight_repo = os.path.expanduser(weight_repo)
 
     hf_model = AutoModelForCausalLM.from_pretrained(
-        model_path,
+        weight_repo,
         torch_dtype=torch.float32,
         device_map="cpu",
     )
     hf_model.eval()
 
-    nnm_config = Config(
-        vocab_size=config.vocab_size,
-        hidden_size=config.hidden_size,
-        max_position_embeddings=config.max_position_embeddings,
-        pad_token_id=config.pad_token_id if config.pad_token_id is not None else 0,
-        rms_norm_eps=config.rms_norm_eps,
-        rope_theta=config.rope_parameters['rope_theta'],
-        num_attention_heads=config.num_attention_heads,
-        num_key_value_heads=config.num_key_value_heads,
-        intermediate_size=config.intermediate_size,
-        sliding_window=config.sliding_window if config.sliding_window is not None else config.max_position_embeddings,
-        num_hidden_layers=config.num_hidden_layers,
-        use_cache=use_cache,
-        tie_word_embeddings=config.tie_word_embeddings,
-    )
-    nnm_model = Qwen2LM(nnm_config)
-    nnm_model.load_hf_state_dict(hf_model.state_dict())
-    nnm_model.eval()
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(weight_repo)
 
     if not use_cache:
         input_ids = tokenizer(prompts[0], return_tensors="pt")["input_ids"]
@@ -340,7 +325,7 @@ def test_qwen2_pretrained(model_path, prompts, use_cache):
     max_new_tokens = 10
 
     hf_model_gen = AutoModelForCausalLM.from_pretrained(
-        model_path,
+        weight_repo,
         torch_dtype=torch.float32,
         device_map="cpu",
     )

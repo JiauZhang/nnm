@@ -1,9 +1,9 @@
-import torch, re
+import torch
 from torch import nn
 from nnm.layers.rope import QwenRoPE
 from nnm.cache import KVCache
-from conippets.config import Config
 from nnm.backends.sdpa import scaled_dot_product_attention
+from nnm.models.pretrained import PretrainedModel
 
 
 class Qwen2MLP(nn.Module):
@@ -156,10 +156,11 @@ class Qwen2Backbone(nn.Module):
         output_embeds = self.norm(output_embeds)
         return output_embeds
 
-class Qwen2LM(nn.Module):
+class Qwen2LM(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        self.tie_word_embeddings = config.tie_word_embeddings
+        self.config = config
+        self.tie_word_embeddings = getattr(config, 'tie_word_embeddings', True)
         self.backbone = Qwen2Backbone(
             vocab_size=config.vocab_size,
             embed_dim=config.hidden_size,
@@ -174,33 +175,20 @@ class Qwen2LM(nn.Module):
             sliding_window=config.sliding_window,
             use_cache=getattr(config, 'use_cache', False),
         )
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         if self.tie_word_embeddings:
-            self.lm_head.weight = self.backbone.token_embeds.weight
+            self.lm_head = None
+        else:
+            self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def forward(self, input_ids, attn_mask=None):
         output_embeds = self.backbone(input_ids, attn_mask=attn_mask)
-        logits = self.lm_head(output_embeds)
+        if self.lm_head is not None:
+            logits = self.lm_head(output_embeds)
+        else:
+            logits = torch.matmul(output_embeds, self.backbone.token_embeds.weight.t())
         return logits
 
     def clear_cache(self):
         if self.backbone.caches:
             for cache in self.backbone.caches:
                 cache.clear()
-
-    def load_hf_state_dict(self, hf_state_dict):
-        REPLACEMENT_PATTERNS = [
-            (r'model\.embed_tokens', 'backbone.token_embeds'),
-            (r'model\.norm(?=\.|$)', 'backbone.norm'),
-            (r'model\.layers', 'backbone.layers'),
-            (r'self_attn\.', 'attn.'),
-            (r'input_layernorm', 'norm_1'),
-            (r'post_attention_layernorm', 'norm_2'),
-        ]
-        nnm_state_dict = {}
-        for hf_key, tensor in hf_state_dict.items():
-            nnm_key = hf_key
-            for pattern, replacement in REPLACEMENT_PATTERNS:
-                nnm_key = re.sub(pattern, replacement, nnm_key)
-            nnm_state_dict[nnm_key] = tensor
-        self.load_state_dict(nnm_state_dict)
