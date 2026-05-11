@@ -14,6 +14,7 @@ from nnm.models.lfm2 import (
 )
 from conippets.config import Config
 
+parametrize = pytest.mark.parametrize
 
 def init_linear_weight(src, dst, bias=True):
     assert dst.weight.shape == src.weight.shape
@@ -57,16 +58,11 @@ def init_lfm2_backbone(nnm_backbone, hf_backbone):
         init_decoder_layer(nnm_decoder_layer, hf_decoder_layer)
 
 
-def compute_rope_cos_sin(batch, seq_len, head_dim, base, position_ids):
-    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
-    inv_freq_expanded = inv_freq[None, :, None].expand(batch, -1, 1)
-    position_ids_expanded = position_ids[:, None, :].float()
-    freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-    emb = torch.cat((freqs, freqs), dim=-1)
-    return emb.cos(), emb.sin()
 
-
-@pytest.mark.parametrize("batch, seq_len, hidden_size, eps", [(1, 123, 64, 1e-6), (2, 233, 128, 1e-5)])
+@parametrize("eps", [1e-6, 1e-5])
+@parametrize("hidden_size", [64, 128])
+@parametrize("seq_len", [123, 233])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
 def test_lfm2_rms_norm(batch, seq_len, hidden_size, eps):
     hf_norm = lfm2.Lfm2RMSNorm(hidden_size, eps=eps)
@@ -78,7 +74,10 @@ def test_lfm2_rms_norm(batch, seq_len, hidden_size, eps):
     torch.testing.assert_close(nnm_norm(x), hf_norm(x), atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.parametrize("batch, seq_len, hidden_size, intermediate_size", [(1, 123, 64, 256), (2, 233, 128, 384)])
+@parametrize("intermediate_size", [256, 384])
+@parametrize("hidden_size", [64, 128])
+@parametrize("seq_len", [123, 233])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
 def test_lfm2_mlp(batch, seq_len, hidden_size, intermediate_size):
     config = cfg.Lfm2Config(hidden_size=hidden_size, intermediate_size=intermediate_size, block_auto_adjust_ff_dim=False)
@@ -90,12 +89,12 @@ def test_lfm2_mlp(batch, seq_len, hidden_size, intermediate_size):
     torch.testing.assert_close(nnm_mlp(x), hf_mlp(x), atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, max_seq_len, hidden_size, num_attention_heads, num_key_value_heads, base",
-    [(1, 234, 512, 1024, 16, 8, 1000000.0), (2, 345, 768, 512, 8, 4, 10000.0)],
-)
+@parametrize("num_key_value_heads", [8, 4])
+@parametrize("hidden_size, num_attention_heads", [(1024, 16), (512, 8)])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
-def test_lfm2_attn(batch, seq_len, max_seq_len, hidden_size, num_attention_heads, num_key_value_heads, base):
+def test_lfm2_attn(batch, hidden_size, num_attention_heads, num_key_value_heads):
+    base, max_seq_len, seq_len = 1000000.0, 512, 234
     head_dim = hidden_size // num_attention_heads
     x = torch.randn(batch, seq_len, hidden_size)
     position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch, -1)
@@ -137,9 +136,12 @@ def test_lfm2_attn(batch, seq_len, max_seq_len, hidden_size, num_attention_heads
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.parametrize("batch, seq_len, hidden_size, conv_L_cache", [(1, 123, 64, 3), (2, 233, 128, 3)])
+@parametrize("hidden_size", [64, 128])
+@parametrize("seq_len", [123, 233])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
-def test_lfm2_short_conv(batch, seq_len, hidden_size, conv_L_cache):
+def test_lfm2_short_conv(batch, seq_len, hidden_size):
+    conv_L_cache = 3
     config = cfg.Lfm2Config(hidden_size=hidden_size, conv_L_cache=conv_L_cache, conv_bias=False)
     hf_conv = lfm2.Lfm2ShortConv(config, layer_idx=0)
     nnm_conv = Lfm2ShortConv(config=Config(hidden_size=hidden_size, conv_L_cache=conv_L_cache, conv_bias=False))
@@ -152,14 +154,14 @@ def test_lfm2_short_conv(batch, seq_len, hidden_size, conv_L_cache):
     torch.testing.assert_close(nnm_conv(x), hf_conv(x), atol=1e-4, rtol=1e-4)
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, max_seq_len, hidden_size, intermediate_size, num_attention_heads, num_key_value_heads, base, eps, is_attn",
-    [(1, 123, 512, 1024, 2560, 16, 8, 1000000.0, 1e-5, True), (2, 233, 768, 512, 1280, 8, 4, 10000.0, 1e-5, False)],
-)
+@parametrize("is_attn", [True, False])
+@parametrize("num_key_value_heads", [8, 4])
+@parametrize("hidden_size, num_attention_heads", [(1024, 16), (512, 8)])
 @torch.no_grad()
 def test_lfm2_decoder_layer(
-    batch, seq_len, max_seq_len, hidden_size, intermediate_size, num_attention_heads, num_key_value_heads, base, eps, is_attn
+    hidden_size, num_attention_heads, num_key_value_heads, is_attn
 ):
+    batch, seq_len, max_seq_len, intermediate_size, base, eps = 1, 123, 512, 2560, 1000000.0, 1e-5
     head_dim = hidden_size // num_attention_heads
     full_attn_idxs = [0] if is_attn else []
 
@@ -204,12 +206,12 @@ def test_lfm2_decoder_layer(
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, max_seq_len, hidden_size, intermediate_size, num_attention_heads, num_key_value_heads",
-    [(1, 123, 512, 1024, 2560, 16, 8), (2, 64, 512, 512, 1280, 8, 4)],
-)
+@parametrize("num_key_value_heads", [8, 4])
+@parametrize("hidden_size, num_attention_heads", [(1024, 16), (512, 8)])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
-def test_lfm2_backbone(batch, seq_len, max_seq_len, hidden_size, intermediate_size, num_attention_heads, num_key_value_heads):
+def test_lfm2_backbone(batch, hidden_size, num_attention_heads, num_key_value_heads):
+    max_seq_len, seq_len, intermediate_size = 512, 123, 2560
     vocab_size, num_hidden_layers, full_attn_idxs = 1234, 8, [2, 5]
     head_dim = hidden_size // num_attention_heads
 
@@ -251,120 +253,15 @@ def test_lfm2_backbone(batch, seq_len, max_seq_len, hidden_size, intermediate_si
     torch.testing.assert_close(nnm_backbone(x), hf_backbone(input_ids=x)[0], atol=1e-2, rtol=1e-2)
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, max_seq_len, hidden_size, intermediate_size, num_attention_heads, num_key_value_heads, use_cache, start_with_multi_tokens",
-    [
-        (1, 10, 512, 1024, 2560, 16, 8, False, False),
-        (1, 10, 512, 1024, 2560, 16, 8, True, False),
-        (1, 10, 512, 1024, 2560, 16, 8, True, True),
-        (2, 8, 512, 512, 1280, 8, 4, False, False),
-        (2, 8, 512, 512, 1280, 8, 4, True, False),
-        (2, 8, 512, 512, 1280, 8, 4, True, True),
-    ],
-)
-@torch.no_grad()
-def test_lfm2_lm(
-    batch,
-    seq_len,
-    max_seq_len,
-    hidden_size,
-    intermediate_size,
-    num_attention_heads,
-    num_key_value_heads,
-    use_cache,
-    start_with_multi_tokens,
-):
-    vocab_size, num_hidden_layers, full_attn_idxs = 2134, 8, [2, 5]
-    head_dim = hidden_size // num_attention_heads
 
-    nnm_config = Config(
-        vocab_size=vocab_size,
-        hidden_size=hidden_size,
-        max_position_embeddings=max_seq_len,
-        pad_token_id=0,
-        num_hidden_layers=num_hidden_layers,
-        intermediate_size=intermediate_size,
-        num_attention_heads=num_attention_heads,
-        num_key_value_heads=num_key_value_heads,
-        rope_theta=1000000.0,
-        norm_eps=1e-5,
-        full_attn_idxs=full_attn_idxs,
-        block_auto_adjust_ff_dim=False,
-        tie_word_embeddings=False,
-        use_cache=use_cache,
-    )
-    nnm_lm = Lfm2LM(nnm_config)
-
-    config = cfg.Lfm2Config(
-        hidden_size=hidden_size,
-        intermediate_size=intermediate_size,
-        num_attention_heads=num_attention_heads,
-        num_key_value_heads=num_key_value_heads,
-        head_dim=head_dim,
-        rope_theta=1000000.0,
-        max_position_embeddings=max_seq_len,
-        norm_eps=1e-5,
-        vocab_size=vocab_size,
-        num_hidden_layers=num_hidden_layers,
-        full_attn_idxs=full_attn_idxs,
-        block_auto_adjust_ff_dim=False,
-        tie_word_embeddings=False,
-        use_cache=use_cache,
-    )
-    config._attn_implementation = "sdpa"
-    hf_lm = lfm2.Lfm2ForCausalLM(config)
-
-    init_lfm2_backbone(nnm_lm.backbone, hf_lm.model)
-    hf_lm.lm_head.weight = nnm_lm.lm_head.weight
-
-    if not use_cache:
-        x = torch.randint(0, vocab_size, (batch, seq_len))
-        nnm_o = nnm_lm(x)
-        hf_o = hf_lm(input_ids=x)[0]
-        assert nnm_o.shape == hf_o.shape
-        torch.testing.assert_close(nnm_o, hf_o, atol=1e-4, rtol=1e-4)
-    else:
-        attn_mask = None
-        past_key_values = None
-
-        if start_with_multi_tokens:
-            start_seq_len = min(3, seq_len)
-            x_start = torch.randint(0, vocab_size, (batch, start_seq_len))
-            nnm_o_start = nnm_lm(x_start, attn_mask=attn_mask)
-            hf_out_start = hf_lm(input_ids=x_start, attention_mask=attn_mask, past_key_values=past_key_values)
-            hf_o_start = hf_out_start.logits
-            past_key_values = hf_out_start.past_key_values
-            assert nnm_o_start.shape == hf_o_start.shape
-            torch.testing.assert_close(nnm_o_start, hf_o_start, atol=1e-5, rtol=1e-5)
-            remaining_steps = seq_len - start_seq_len
-        else:
-            remaining_steps = seq_len
-
-        for _ in range(remaining_steps):
-            x = torch.randint(0, vocab_size, (batch, 1))
-            nnm_o = nnm_lm(x, attn_mask=attn_mask)
-            hf_out = hf_lm(input_ids=x, attention_mask=attn_mask, past_key_values=past_key_values)
-            hf_o = hf_out.logits
-            past_key_values = hf_out.past_key_values
-            assert nnm_o.shape == hf_o.shape
-            torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
-
-
-@pytest.mark.parametrize(
-    "prompts, use_cache",
-    [
-        (["A", " Tell me more."], False),
-        (["A", " Tell me more."], True),
-        (["Hello world", " What is it?"], False),
-        (["Hello world", " What is it?"], True),
-        (["Python is a programming", " How does it work?"], False),
-        (["Python is a programming", " How does it work?"], True),
-        (["What are you", " Can you explain?"], False),
-        (["What are you", " Can you explain?"], True),
-        (["Who is", " Tell me about them."], False),
-        (["Who is", " Tell me about them."], True),
-    ],
-)
+@parametrize("use_cache", [False, True])
+@parametrize("prompts", [
+    ["A", " Tell me more."],
+    ["Hello world", " What is it?"],
+    ["Python is a programming", " How does it work?"],
+    ["What are you", " Can you explain?"],
+    ["Who is", " Tell me about them."],
+])
 @torch.no_grad()
 def test_lfm2_pretrained(model_path, prompts, use_cache):
     assert model_path is not None

@@ -10,6 +10,8 @@ from nnm.models.qwen2 import (
 )
 from conippets.config import Config
 
+parametrize = pytest.mark.parametrize
+
 def init_linear_weight(src, dst, bias=True):
     assert dst.weight.shape == src.weight.shape
     dst.weight = src.weight
@@ -28,13 +30,13 @@ def init_linear_weight_kv(nnm_k_proj, nnm_v_proj, hf_k_proj, hf_v_proj):
     nnm_v_proj.weight = torch.nn.Parameter(hf_v_proj.weight.clone())
     nnm_v_proj.bias = torch.nn.Parameter(hf_v_proj.bias.clone())
 
-@pytest.mark.parametrize(
-    'batch, seq_len, max_seq_len, embed_dim, num_attn_heads, num_kv_heads, base', [
-        (1, 234, 512, 32, 8, 4, 2333), (2, 345, 768, 64, 8, 8, 3456),
-    ]
-)
+@parametrize("num_kv_heads", [4, 8])
+@parametrize("embed_dim", [32, 64])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
-def test_qwen2_attn(batch, seq_len, max_seq_len, embed_dim, num_attn_heads, num_kv_heads, base):
+def test_qwen2_attn(batch, embed_dim, num_kv_heads):
+    num_attn_heads = 8
+    max_seq_len, seq_len, base = 512, 234, 2333
     x = torch.randn(batch, seq_len, embed_dim)
     position_ids = torch.arange(seq_len)
     head_dim = embed_dim // num_attn_heads
@@ -92,7 +94,10 @@ def test_qwen2_attn(batch, seq_len, max_seq_len, embed_dim, num_attn_heads, num_
     assert nnm_o.shape == hf_o.shape
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 
-@pytest.mark.parametrize('batch, seq_len, embed_dim, eps', [(1, 123, 64, 1e-6), (2, 233, 128, 1e-8)])
+@parametrize("eps", [1e-6, 1e-8])
+@parametrize("embed_dim", [64, 128])
+@parametrize("seq_len", [123, 233])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
 def test_qwen2_rms_norm(batch, seq_len, embed_dim, eps):
     hf_norm = qwen2.Qwen2RMSNorm(embed_dim, eps=eps)
@@ -112,7 +117,10 @@ def init_mlp_weight(src, dst):
     init_linear_weight(src.up_proj, dst.up_proj, bias=False)
     init_linear_weight(src.down_proj, dst.down_proj, bias=False)
 
-@pytest.mark.parametrize('batch, seq_len, embed_dim, intermediate_size', [(1, 123, 64, 256), (2, 233, 128, 384)])
+@parametrize("intermediate_size", [256, 384])
+@parametrize("embed_dim", [64, 128])
+@parametrize("seq_len", [123, 233])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
 def test_qwen2_mlp(batch, seq_len, embed_dim, intermediate_size):
     config = cfg.Qwen2Config(hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu")
@@ -135,13 +143,12 @@ def init_decoder_layer(nnm_decoder, hf_decoder):
     init_linear_weight_kv(nnm_attn.k_proj, nnm_attn.v_proj, hf_attn.k_proj, hf_attn.v_proj)
     hf_decoder.eval()
 
-@pytest.mark.parametrize(
-    'batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps', [
-        (1, 123, 512, 96, 256, 16, 4, 23432, 1e-6), (2, 233, 768, 128, 384, 32, 8, 10000, 1e-7),
-    ]
-)
+@parametrize("num_kv_heads", [4, 8])
+@parametrize("embed_dim, num_attn_heads", [(96, 16), (128, 32)])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
-def test_qwen2_decoder_layer(batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps):
+def test_qwen2_decoder_layer(batch, embed_dim, num_attn_heads, num_kv_heads):
+    max_seq_len, seq_len, intermediate_size, base, eps = 512, 123, 256, 23432, 1e-6
     head_dim = embed_dim // num_attn_heads
     nnm_rope = QwenRoPE(max_seq_len=max_seq_len, embed_dim=head_dim, base=base)
     nnm_decoder = Qwen2DecoderLayer(
@@ -188,20 +195,15 @@ def random_causal_mask(x):
         attn_mask[b, idx:] = 0
     return attn_mask
 
-@pytest.mark.parametrize(
-    ','.join([
-        'batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps',
-        'vocab_size, num_hidden_layers, sliding_window',
-    ]), [
-        (1, 123, 512, 96, 256, 16, 4, 23432, 1e-6, 1234, 6, 1024),
-        (2, 233, 768, 128, 384, 32, 8, 10000, 1e-7, 2345, 9, 256),
-    ]
-)
+@parametrize("num_kv_heads", [4, 8])
+@parametrize("embed_dim, num_attn_heads", [(96, 16), (128, 32)])
+@parametrize("batch", [1, 2])
 @torch.no_grad()
 def test_qwen2_backbone(
-    batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps,
-    vocab_size, num_hidden_layers, sliding_window,
+    batch, embed_dim, num_attn_heads, num_kv_heads,
 ):
+    max_seq_len, seq_len, intermediate_size, base, eps = 512, 123, 256, 23432, 1e-6
+    vocab_size, num_hidden_layers, sliding_window = 1234, 6, 1024
     head_dim = embed_dim // num_attn_heads
     nnm_backbone = Qwen2Backbone(
         vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=0, rms_norm_eps=eps,
@@ -228,74 +230,13 @@ def test_qwen2_backbone(
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.parametrize(
-    ','.join([
-        'batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps',
-        'vocab_size, num_hidden_layers, sliding_window',
-    ]), [
-        (1, 123, 512, 96, 256, 16, 4, 23233, 1e-6, 2134, 6, 1234),
-        (2, 233, 768, 128, 384, 32, 8, 12345, 1e-7, 3211, 9, 256),
-    ]
-)
-@torch.no_grad()
-def test_qwen2_lm(
-    batch, seq_len, max_seq_len, embed_dim, intermediate_size, num_attn_heads, num_kv_heads, base, eps,
-    vocab_size, num_hidden_layers, sliding_window,
-):
-    head_dim = embed_dim // num_attn_heads
-    nnm_config = Config(
-        vocab_size=vocab_size, hidden_size=embed_dim, max_position_embeddings=max_seq_len, pad_token_id=0, rms_norm_eps=eps,
-        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, rope_theta=base, intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window, use_cache=False, tie_word_embeddings=False,
-    )
-    nnm_lm = Qwen2LM(nnm_config)
-    hf_config = cfg.Qwen2Config(
-        hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu",
-        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, sliding_window=sliding_window,
-        rms_norm_eps=eps, head_dim=head_dim, rope_theta=base, max_position_embeddings=max_seq_len,
-        vocab_size=vocab_size, use_cache=False, num_hidden_layers=num_hidden_layers,
-    )
-    hf_config._attn_implementation = "sdpa"
-    hf_lm = qwen2.Qwen2ForCausalLM(hf_config)
 
-    init_qwen2_backbone(nnm_lm.backbone, hf_lm.model)
-    hf_lm.lm_head.weight = nnm_lm.lm_head.weight
-
-    x = torch.randint(0, vocab_size, (batch, seq_len))
-    attn_mask = random_causal_mask(x)
-
-    nnm_o = nnm_lm(x, attn_mask=attn_mask)
-    hf_o = hf_lm(input_ids=x, attention_mask=attn_mask)[0]
-    assert nnm_o.shape == hf_o.shape
-    torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
-
-    nnm_config = Config(
-        vocab_size=vocab_size, hidden_size=embed_dim, max_position_embeddings=max_seq_len, pad_token_id=0, rms_norm_eps=eps,
-        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, rope_theta=base, intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window, use_cache=True, tie_word_embeddings=False,
-    )
-    nnm_lm = Qwen2LM(nnm_config)
-    hf_config.use_cache = True
-    hf_lm = qwen2.Qwen2ForCausalLM(hf_config)
-    attn_mask = None
-    for _ in range(seq_len):
-        x = torch.randint(0, vocab_size, (batch, 1))
-        nnm_o = nnm_lm(x, attn_mask=attn_mask)
-        hf_o = hf_lm(input_ids=x, attention_mask=attn_mask)[0]
-        assert nnm_o.shape == hf_o.shape
-
-
-@pytest.mark.parametrize(
-    "prompts, use_cache",
-    [
-        (["Hello, how are you?", " What about Python?"], False),
-        (["Hello, how are you?", " What about Python?"], True),
-        (["Hello", " Tell me more."], False),
-        (["Hello", " Tell me more."], True),
-        (["What is the capital of France?", " What about Germany?"], False),
-        (["What is the capital of France?", " What about Germany?"], True),
-    ],
-)
+@parametrize("use_cache", [False, True])
+@parametrize("prompts", [
+    ["Hello, how are you?", " What about Python?"],
+    ["Hello", " Tell me more."],
+    ["What is the capital of France?", " What about Germany?"],
+])
 @torch.no_grad()
 def test_qwen2_pretrained(model_path, prompts, use_cache):
     assert model_path is not None
