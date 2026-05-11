@@ -33,18 +33,9 @@ class KittenTTS(PretrainedModel):
 
     @classmethod
     def from_pretrained(cls, pretrained_path):
-        config_path = os.path.join(pretrained_path, 'config.json')
-        config = Config.from_json(config_path)
-
-        weight_path = getattr(config, '_nnm_weight_path', 'model.pth')
-        model_path = os.path.join(pretrained_path, weight_path)
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f'Weight file not found: {model_path}')
-
         voices_path = os.path.join(pretrained_path, 'voices.npz')
-        model = cls(config, voices_path=voices_path if os.path.exists(voices_path) else None)
-        model._load_weights(model_path)
-        return model
+        voices_path = voices_path if os.path.exists(voices_path) else None
+        return super().from_pretrained(pretrained_path, voices_path=voices_path)
 
     def load_voices(self, voices_path):
         data = np.load(voices_path)
