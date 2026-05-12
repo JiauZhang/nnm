@@ -32,10 +32,12 @@ class KittenTTS(PretrainedModel):
             self.load_voices(voices_path)
 
     @classmethod
-    def from_pretrained(cls, pretrained_path):
-        voices_path = os.path.join(pretrained_path, 'voices.npz')
+    def from_pretrained(cls, pretrained_path, **kwargs):
+        download_root = kwargs.pop('download_root', None)
+        local_path = cls._resolve_pretrained_path(pretrained_path, download_root)
+        voices_path = os.path.join(local_path, 'voices.npz')
         voices_path = voices_path if os.path.exists(voices_path) else None
-        return super().from_pretrained(pretrained_path, voices_path=voices_path)
+        return super().from_pretrained(local_path, download_root=download_root, voices_path=voices_path, **kwargs)
 
     def load_voices(self, voices_path):
         data = np.load(voices_path)

@@ -12,18 +12,22 @@ _DEFAULT_HF_ROOT = os.path.expanduser('~/.nnm/huggingface')
 
 class PretrainedModel(nn.Module):
     @classmethod
-    def from_pretrained(cls, pretrained_path, **kwargs):
-        download_root = (
-            kwargs.pop('download_root', None)
-            or os.environ.get('NNM_HF_ROOT')
-            or _DEFAULT_HF_ROOT
-        )
+    def _resolve_pretrained_path(cls, pretrained_path, download_root=None):
+        if os.path.exists(pretrained_path):
+            return pretrained_path
 
-        if not os.path.exists(pretrained_path):
-            local_path = os.path.join(download_root, pretrained_path)
-            if not os.path.exists(local_path):
-                cls._download_from_hf(pretrained_path, local_path)
-            pretrained_path = local_path
+        if download_root is None:
+            download_root = os.environ.get('NNM_HF_ROOT') or _DEFAULT_HF_ROOT
+
+        local_path = os.path.join(download_root, pretrained_path)
+        if not os.path.exists(local_path):
+            cls._download_from_hf(pretrained_path, local_path)
+        return local_path
+
+    @classmethod
+    def from_pretrained(cls, pretrained_path, **kwargs):
+        download_root = kwargs.pop('download_root', None)
+        pretrained_path = cls._resolve_pretrained_path(pretrained_path, download_root)
 
         config_path = os.path.join(pretrained_path, 'config.json')
 
