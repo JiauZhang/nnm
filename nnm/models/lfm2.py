@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from nnm.layers.rope import QwenRoPE
+from nnm.layers.attention_mask import make_causal_mask
 from nnm.cache import KVCache, StateCache
 from nnm.backends.sdpa import scaled_dot_product_attention
 from nnm.models.pretrained import PretrainedModel
@@ -75,10 +76,7 @@ class Lfm2Attention(nn.Module):
             key_states, value_states = cache.update(key_states, value_states)
             if attn_mask is None and seq_len > 1:
                 kv_len = key_states.shape[-2]
-                mask = torch.full((seq_len, kv_len), float('-inf'), device=query_states.device, dtype=query_states.dtype)
-                for i in range(seq_len):
-                    mask[i, :cache_len + i + 1] = 0
-                attn_mask = mask.unsqueeze(0).unsqueeze(0)
+                attn_mask = make_causal_mask(seq_len, kv_len, cache_len, query_states.device, query_states.dtype)
             is_causal = False
         else:
             is_causal = attn_mask is None

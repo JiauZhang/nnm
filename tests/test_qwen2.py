@@ -6,7 +6,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from nnm.layers.rope import QwenRoPE
 from nnm.models.qwen2 import (
     Qwen2Attention, Qwen2MLP, Qwen2DecoderLayer, Qwen2Backbone,
-    Qwen2LM, make_causal_attn_mask,
+    Qwen2LM,
 )
 from conippets.config import Config
 

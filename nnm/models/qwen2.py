@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from nnm.layers.rope import QwenRoPE
+from nnm.layers.attention_mask import make_causal_mask
 from nnm.cache import KVCache
 from nnm.backends.sdpa import scaled_dot_product_attention
 from nnm.models.pretrained import PretrainedModel
@@ -18,26 +19,6 @@ class Qwen2MLP(nn.Module):
     def forward(self, x):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
-
-@torch.no_grad()
-def make_causal_attn_mask(attn_mask, cache_len, sliding_window):
-    batch, seq_len = attn_mask.shape
-    dtype_info = torch.finfo if attn_mask.dtype.is_floating_point else torch.iinfo
-    inf_val = dtype_info(attn_mask.dtype).min
-    kv_len = seq_len + cache_len
-    causal_attn_mask = torch.full((seq_len, kv_len), fill_value=inf_val)
-    query_position = torch.arange(cache_len, kv_len)
-    key_position = torch.arange(kv_len)
-    triu_attn_mask = query_position > key_position.reshape(-1, 1)
-    if kv_len > sliding_window:
-        sliding_attn_mask = (query_position - sliding_window).reshape(-1, 1) >= key_position.reshape(1, -1)
-        triu_attn_mask.bitwise_or_(sliding_attn_mask)
-    causal_attn_mask *= triu_attn_mask
-    causal_attn_mask = causal_attn_mask[None, :, :].expand(batch, -1, -1)
-    padding_mask = causal_attn_mask + attn_mask[:, None, :]
-    padding_mask = padding_mask == 0
-    causal_attn_mask = causal_attn_mask.masked_fill(padding_mask, inf_val).unsqueeze(1)
-    return causal_attn_mask
 
 class Qwen2Attention(nn.Module):
     def __init__(self, *, embed_dim, num_attn_heads, num_kv_heads, position_encoder, use_cache=False):
@@ -75,12 +56,8 @@ class Qwen2Attention(nn.Module):
             cache_len = cache.kv_len
             k, v = cache.update(k, v)
             if attn_mask is None and seq_len > 1:
-                # Create causal mask for new tokens: new token i can see cache + new tokens [0, i]
                 kv_len = k.shape[-2]
-                mask = torch.full((seq_len, kv_len), float('-inf'), device=q.device, dtype=q.dtype)
-                for i in range(seq_len):
-                    mask[i, :cache_len + i + 1] = 0
-                attn_mask = mask.unsqueeze(0).unsqueeze(0)
+                attn_mask = make_causal_mask(seq_len, kv_len, cache_len, q.device, q.dtype)
             is_causal = False
         else:
             is_causal = attn_mask is None
@@ -150,7 +127,8 @@ class Qwen2Backbone(nn.Module):
         output_embeds = self.token_embeds(input_ids)
         cache_len = self.caches[0].kv_len if self.use_cache and self.caches else 0
         if attn_mask is not None:
-            attn_mask = make_causal_attn_mask(attn_mask, cache_len, self.sliding_window)
+            batch, seq_len = attn_mask.shape
+            attn_mask = make_causal_mask(seq_len, seq_len + cache_len, cache_len, attn_mask.device, attn_mask.dtype, attn_mask=attn_mask, sliding_window=self.sliding_window)
         for decoder_layer, cache in zip(self.layers, self.caches or [None] * len(self.layers)):
             output_embeds = decoder_layer(output_embeds, attn_mask=attn_mask, cache=cache)
         output_embeds = self.norm(output_embeds)
