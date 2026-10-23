@@ -14,6 +14,8 @@ from .text_encoder import TextEncoder
 
 
 class KittenTTS(PretrainedModel):
+    weight_pattern = 'model.pth'
+
     def __init__(self, config, voices_path=None):
         super().__init__()
         self.config = config
@@ -31,13 +33,10 @@ class KittenTTS(PretrainedModel):
         if voices_path:
             self.load_voices(voices_path)
 
-    @classmethod
-    def from_pretrained(cls, pretrained_path, **kwargs):
-        download_root = kwargs.pop('download_root', None)
-        local_path = cls._resolve_pretrained_path(pretrained_path, download_root)
-        voices_path = os.path.join(local_path, 'voices.npz')
-        voices_path = voices_path if os.path.exists(voices_path) else None
-        return super().from_pretrained(local_path, download_root=download_root, voices_path=voices_path, **kwargs)
+    def _post_load(self, directory):
+        voices_path = os.path.join(directory, 'voices.npz')
+        if os.path.exists(voices_path):
+            self.load_voices(voices_path)
 
     def load_voices(self, voices_path):
         data = np.load(voices_path)
