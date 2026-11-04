@@ -24,12 +24,14 @@ class LayerNorm1d(nn.Module):
 def _reorder_lstm_weights_iofc_to_ifco(W, R, B):
     hidden = R.shape[0] // 4
 
-    idx = torch.cat([
-        torch.arange(0, hidden),
-        torch.arange(2 * hidden, 3 * hidden),
-        torch.arange(3 * hidden, 4 * hidden),
-        torch.arange(hidden, 2 * hidden),
-    ])
+    idx = torch.cat(
+        [
+            torch.arange(0, hidden),
+            torch.arange(2 * hidden, 3 * hidden),
+            torch.arange(3 * hidden, 4 * hidden),
+            torch.arange(hidden, 2 * hidden),
+        ]
+    )
 
     W_ifco = W[idx]
     R_ifco = R[idx]
@@ -72,17 +74,13 @@ class BidirectionalLSTM(nn.Module):
 
         self._lstm = nn.LSTM(input_size, hidden_size, bidirectional=True, batch_first=False)
 
-        W_f, R_f, B_ih_f, B_hh_f = _reorder_lstm_weights_iofc_to_ifco(
-            self.W_fwd, self.R_fwd, self.B_fwd
-        )
+        W_f, R_f, B_ih_f, B_hh_f = _reorder_lstm_weights_iofc_to_ifco(self.W_fwd, self.R_fwd, self.B_fwd)
         self._lstm.weight_ih_l0.data = W_f
         self._lstm.weight_hh_l0.data = R_f
         self._lstm.bias_ih_l0.data = B_ih_f
         self._lstm.bias_hh_l0.data = B_hh_f
 
-        W_r, R_r, B_ih_r, B_hh_r = _reorder_lstm_weights_iofc_to_ifco(
-            self.W_rev, self.R_rev, self.B_rev
-        )
+        W_r, R_r, B_ih_r, B_hh_r = _reorder_lstm_weights_iofc_to_ifco(self.W_rev, self.R_rev, self.B_rev)
         self._lstm.weight_ih_l0_reverse.data = W_r
         self._lstm.weight_hh_l0_reverse.data = R_r
         self._lstm.bias_ih_l0_reverse.data = B_ih_r

@@ -12,19 +12,19 @@ def predict(model, raw_bytes):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='File type detection with nnm.magika')
-    parser.add_argument('--model-path', type=str, required=True, help='Path to pretrained model directory')
-    parser.add_argument('--file', type=str, required=True, help='File path to identify')
+    parser = argparse.ArgumentParser(description="File type detection with nnm.magika")
+    parser.add_argument("--model-path", type=str, required=True, help="Path to pretrained model directory")
+    parser.add_argument("--file", type=str, required=True, help="File path to identify")
     args = parser.parse_args()
 
     model = Magika.from_pretrained(args.model_path)
     model.eval()
 
-    with open(args.file, 'rb') as f:
+    with open(args.file, "rb") as f:
         raw_bytes = f.read()
     label, score = predict(model, raw_bytes)
-    print(f'{args.file}: {label} (score={score:.4f})')
+    print(f"{args.file}: {label} (score={score:.4f})")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

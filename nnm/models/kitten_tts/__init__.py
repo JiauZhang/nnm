@@ -1,1 +1,1 @@
-from .model import KittenTTS
+from .model import KittenTTS as KittenTTS

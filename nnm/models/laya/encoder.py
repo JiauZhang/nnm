@@ -2,26 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-
-def rotate_half(x):
-    half = x.shape[-1] // 2
-    return torch.cat([-x[..., half:], x[..., :half]], dim=-1)
-
-
-def apply_rotary(x, cos, sin):
-    return x * cos[:, None] + rotate_half(x) * sin[:, None]
-
-
-class RotaryEmbedding(nn.Module):
-    def __init__(self, head_dim, theta):
-        super().__init__()
-        inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2, dtype=torch.float) / head_dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-
-    def forward(self, position_ids, dtype):
-        freqs = position_ids[:, :, None].float() * self.inv_freq
-        emb = torch.cat([freqs, freqs], dim=-1)
-        return emb.cos().to(dtype), emb.sin().to(dtype)
+from nnm.layers.rope import RoPE, apply_rope, rotary_inv_freq
 
 
 class Embeddings(nn.Module):
@@ -47,7 +28,7 @@ class Attention(nn.Module):
         batch, length, _ = x.shape
         qkv = self.Wqkv(x).reshape(batch, length, 3, self.num_heads, self.head_dim)
         query, key, value = (part.transpose(1, 2) for part in qkv.unbind(2))
-        query, key = apply_rotary(query, cos, sin), apply_rotary(key, cos, sin)
+        query, key = apply_rope(query, cos, sin, dim=1), apply_rope(key, cos, sin, dim=1)
         out = F.scaled_dot_product_attention(query, key, value, attn_mask=mask, scale=self.scale)
         return self.Wo(out.transpose(1, 2).reshape(batch, length, -1))
 
@@ -89,8 +70,10 @@ class ModernBert(nn.Module):
         self.final_norm = nn.LayerNorm(config.hidden_size, eps=config.norm_eps, bias=False)
         self.rope = nn.ModuleDict(
             {
-                layer_type: RotaryEmbedding(
-                    config.hidden_size // config.num_attention_heads, config.rope_parameters[layer_type]["rope_theta"]
+                layer_type: RoPE(
+                    rotary_inv_freq(
+                        config.hidden_size // config.num_attention_heads, config.rope_parameters[layer_type]["rope_theta"]
+                    )
                 )
                 for layer_type in self.windows
             }
@@ -111,7 +94,7 @@ class ModernBert(nn.Module):
             position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None]
 
         length = input_ids.shape[1]
-        ropes = {layer_type: self.rope[layer_type](position_ids, hidden.dtype) for layer_type in self.windows}
+        ropes = {layer_type: self.rope[layer_type](position_ids) for layer_type in self.windows}
         masks = {
             layer_type: self.build_mask(attention_mask, length, window, input_ids.device)
             for layer_type, window in self.windows.items()

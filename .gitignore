@@ -131,3 +131,6 @@ dmypy.json
 # MacOS
 .DS_Store
 **/.DS_Store
+
+# Model weights
+*.safetensors

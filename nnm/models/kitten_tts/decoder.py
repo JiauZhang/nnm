@@ -83,7 +83,7 @@ class DecoderUpsampleBlock(nn.Module):
         if style.dim() == 1:
             style = style.unsqueeze(0)
 
-        x_up = F.interpolate(x, scale_factor=2, mode='nearest')
+        x_up = F.interpolate(x, scale_factor=2, mode="nearest")
         x_res = self.conv1x1(x_up)
 
         x = F.leaky_relu(self.adain1(x, style), self.leaky_relu_slope)
@@ -101,17 +101,59 @@ class KittenDecoder(nn.Module):
         super().__init__()
         c = config.decoder
         self._style_dim = c.style_dim
-        self.encode = DecoderBlock(c.encode_in_channels, c.encode_out_channels, style_dim=c.style_dim, kernel_size=c.block_kernel, leaky_relu_slope=c.leaky_relu_slope)
+        self.encode = DecoderBlock(
+            c.encode_in_channels,
+            c.encode_out_channels,
+            style_dim=c.style_dim,
+            kernel_size=c.block_kernel,
+            leaky_relu_slope=c.leaky_relu_slope,
+        )
 
-        self.decode0 = DecoderBlock(c.decode_in_channels, c.decode_out_channels, style_dim=c.style_dim, kernel_size=c.block_kernel, leaky_relu_slope=c.leaky_relu_slope)
-        self.decode1 = DecoderBlock(c.decode_in_channels, c.decode_out_channels, style_dim=c.style_dim, kernel_size=c.block_kernel, leaky_relu_slope=c.leaky_relu_slope)
-        self.decode2 = DecoderBlock(c.decode_in_channels, c.decode_out_channels, style_dim=c.style_dim, kernel_size=c.block_kernel, leaky_relu_slope=c.leaky_relu_slope)
-        self.decode3 = DecoderUpsampleBlock(c.decode_in_channels, c.decode_out_channels, style_dim=c.style_dim, kernel_size=c.block_kernel, leaky_relu_slope=c.leaky_relu_slope)
+        self.decode0 = DecoderBlock(
+            c.decode_in_channels,
+            c.decode_out_channels,
+            style_dim=c.style_dim,
+            kernel_size=c.block_kernel,
+            leaky_relu_slope=c.leaky_relu_slope,
+        )
+        self.decode1 = DecoderBlock(
+            c.decode_in_channels,
+            c.decode_out_channels,
+            style_dim=c.style_dim,
+            kernel_size=c.block_kernel,
+            leaky_relu_slope=c.leaky_relu_slope,
+        )
+        self.decode2 = DecoderBlock(
+            c.decode_in_channels,
+            c.decode_out_channels,
+            style_dim=c.style_dim,
+            kernel_size=c.block_kernel,
+            leaky_relu_slope=c.leaky_relu_slope,
+        )
+        self.decode3 = DecoderUpsampleBlock(
+            c.decode_in_channels,
+            c.decode_out_channels,
+            style_dim=c.style_dim,
+            kernel_size=c.block_kernel,
+            leaky_relu_slope=c.leaky_relu_slope,
+        )
 
         self.asr_res = nn.Conv1d(c.asr_res_in, c.asr_res_out, 1)
 
-        self.F0_conv = nn.Conv1d(c.f0_downsample_channels, c.f0_downsample_channels, c.downsample_kernel, stride=c.downsample_stride, padding=c.downsample_padding)
-        self.N_conv = nn.Conv1d(c.n_downsample_channels, c.n_downsample_channels, c.downsample_kernel, stride=c.downsample_stride, padding=c.downsample_padding)
+        self.F0_conv = nn.Conv1d(
+            c.f0_downsample_channels,
+            c.f0_downsample_channels,
+            c.downsample_kernel,
+            stride=c.downsample_stride,
+            padding=c.downsample_padding,
+        )
+        self.N_conv = nn.Conv1d(
+            c.n_downsample_channels,
+            c.n_downsample_channels,
+            c.downsample_kernel,
+            stride=c.downsample_stride,
+            padding=c.downsample_padding,
+        )
 
     def _build_decoder_input(self, x, asr_out, f0_ds, n_ds):
         return torch.cat([x, asr_out, f0_ds, n_ds], dim=1)
@@ -119,7 +161,7 @@ class KittenDecoder(nn.Module):
     def forward(self, text_expanded, f0, n_amp, style):
         if style.dim() == 1:
             style = style.unsqueeze(0)
-        decoder_style = style[:, :self._style_dim]
+        decoder_style = style[:, : self._style_dim]
 
         f0_ds = self.F0_conv(f0)
         n_ds = self.N_conv(n_amp)

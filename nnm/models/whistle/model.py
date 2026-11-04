@@ -1,12 +1,9 @@
-import json
 import os
 import time
 import wave
-from dataclasses import dataclass
 
 import numpy as np
 import torch
-from safetensors.torch import load_file
 
 from ..pretrained import PretrainedModel
 from .frontend import ConvStem, LogMel
@@ -18,42 +15,7 @@ ENCODER_FRAME_MS = 80
 LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
 LANGUAGE_TOKENS = {f"<|{code}|>": code for code in LANGUAGES}
 MAX_AUDIO_SECONDS = 30
-HADA_SLOTS = ("d1", "d2", "b2", "d3", "d4", "w1a", "w1b", "w2a", "w2b", "w3a", "w3b", "cond_v", "cond_u")
 KEYWORD_BIAS = 2.0
-WEIGHTS = os.path.join("checkpoints", "whistle.safetensors")
-FBANK = os.path.join("checkpoints", "fbank.pt")
-TOKENIZER = os.path.join("checkpoints", "tokenizer.bin")
-
-
-@dataclass
-class WhistleConfig:
-    vocab_size: int
-    d_model: int
-    num_heads: int
-    num_kv_heads: int
-    num_layers: int
-    encoder_layers: int
-    qk_head_dim: int
-    v_head_dim: int
-    qkv_conv_taps: int
-    mhc_lanes: int
-    encoder_lanes: int
-    hada_n: int
-    rope_theta: float
-    engram_slots: int
-    engram_orders: tuple
-    engram_layers: tuple
-    engram_dilation: int
-    engram_tables: int
-    engram_sub_dim: int
-    conv_kernel: int
-    stem_channels: int
-    mel_bins: int
-    n_fft: int
-    win_length: int = 400
-    hop_length: int = 160
-    sample_rate: int = SAMPLE_RATE
-    max_audio_seconds: int = MAX_AUDIO_SECONDS
 
 
 class Whistle(PretrainedModel):
@@ -66,17 +28,9 @@ class Whistle(PretrainedModel):
         self.decoder = DecoderStack(config)
         self.tokenizer = None
 
-    @classmethod
-    def from_pretrained(cls, pretrained_path, map_location="cpu", **kwargs):
-        """A model directory holds config.json, the f32 master, the fbank and the tokenizer blob."""
-        directory = cls._resolve_pretrained_path(pretrained_path, kwargs.pop("download_root", None))
-        with open(os.path.join(directory, "config.json")) as handle:
-            model = cls(WhistleConfig(**json.load(handle)))
-        model.load_state_dict(_state_dict(load_file(os.path.join(directory, WEIGHTS))), strict=True)
-        model.mel.fbank.data = torch.load(os.path.join(directory, FBANK), map_location="cpu")
-        with open(os.path.join(directory, TOKENIZER), "rb") as handle:
-            model.tokenizer = WhistleTokenizer(handle.read())
-        return model.to(map_location).eval()
+    def _post_load(self, directory):
+        self.mel.fbank.data = torch.load(os.path.join(directory, "fbank.pt"), map_location="cpu")
+        self.tokenizer = WhistleTokenizer(os.path.join(directory, "tokenizer.json"))
 
     @torch.no_grad()
     def embed(self, audio):
@@ -229,7 +183,7 @@ class Whistle(PretrainedModel):
                 buffered.append(samples)
                 received += samples.numel() / rate
             audio = torch.cat(buffered) if buffered else torch.zeros(1)
-            window = audio[-self.config.max_audio_seconds * rate :]
+            window = audio[-getattr(self.config, "max_audio_seconds", MAX_AUDIO_SECONDS) * rate :]
             offset = (audio.numel() - window.numel()) / rate
             tokens, words = self._window(window, beam, language, keywords)
             detected = detected or language or self._language(tokens) or ""
@@ -274,107 +228,6 @@ class Whistle(PretrainedModel):
             if self.tokenizer.pieces[token] in LANGUAGE_TOKENS:
                 return self.tokenizer.decode(tokens[index + 1 :])
         return self.tokenizer.decode(tokens)
-
-
-def _state_dict(tensors):
-    """The master stores one batched tensor per layer under JAX names; split it into module weights."""
-    def rows(key):
-        return torch.as_tensor(tensors[key])
-
-    def kernel(key, layer):
-        return rows(key)[layer].T
-
-    def channels(prefix, layer, count):
-        return {f"{prefix}.{layer}.{tail}.weight": kernel(f"{head}/kernel", layer)
-                for tail, head in count}
-
-    def norms(prefix, layer, count):
-        return {f"{prefix}.{layer}.{tail}.scale": rows(f"{head}/scale")[layer]
-                for tail, head in count}
-
-    def taps(prefix, layer):
-        head = "stack/layers/block/self_attn"
-        return {f"{prefix}.{layer}.self_attn.{name}": rows(f"{head}/{name}")[layer]
-                for name in ("q_taps", "k_taps", "v_taps")}
-
-    state = {"decoder.embedding.weight": rows("embedding/embedding")}
-    state["decoder.final_norm.scale"] = rows("stack/final_norm/scale")
-    state["encoder.final_norm.scale"] = rows("encoder/final_norm/scale")
-    state |= {f"decoder.engrams.{index}.embedding": rows(f"engrams_{index}/embedding")
-              for index in range(sum(key.endswith("/key_proj/kernel") for key in tensors))}
-    for index in range(sum(key.endswith("/key_proj/kernel") for key in tensors)):
-        state[f"decoder.engrams.{index}.key_proj.weight"] = rows(f"engrams_{index}/key_proj/kernel").T
-        state[f"decoder.engrams.{index}.value_proj.weight"] = rows(f"engrams_{index}/value_proj/kernel").T
-        state[f"decoder.engrams.{index}.taps"] = rows(f"engrams_{index}/taps")
-    state |= {
-        f"decoder.mhc.{name}": rows(f"stack/mhc_{name}")
-        for name in ("a_pre", "a_post", "a_res", "b_pre", "b_post", "b_res")
-    }
-    state |= {f"decoder.mhc.phi_{name}": rows(f"stack/mhc_phi_{name}").transpose(-1, -2)
-              for name in ("pre", "post", "res")}
-    state["encoder.pe_gate"] = rows("pe_gate").reshape(())
-    state |= {f"encoder.mhc.{name}": rows(f"encoder/mhc_{name}")
-              for name in ("a_pre", "a_post", "a_res", "b_pre", "b_post", "b_res")}
-    state |= {f"encoder.mhc.phi_{name}": rows(f"encoder/mhc_phi_{name}").transpose(-1, -2)
-              for name in ("pre", "post", "res")}
-    for tail, head in (("stem.conv", "stem/w"), ("stem.dw_1", "stem/dw_1"), ("stem.dw_2", "stem/dw_2")):
-        state[f"{tail}.weight"] = rows(head).permute(3, 2, 0, 1)
-    for tail, head in (("stem.pw_1", "stem/pw_1"), ("stem.pw_2", "stem/pw_2"), ("stem.out", "stem/out")):
-        state[f"{tail}.weight"] = rows(f"{head}/kernel").T
-    for layer in range(rows("stack/layers/block/attn_gate").shape[0]):
-        state |= channels(f"decoder.blocks", layer, (
-            ("self_attn.q_proj", "stack/layers/block/self_attn/q_proj"),
-            ("self_attn.k_proj", "stack/layers/block/self_attn/k_proj"),
-            ("self_attn.v_proj", "stack/layers/block/self_attn/v_proj"),
-            ("self_attn.out_proj", "stack/layers/block/self_attn/out_proj"),
-            ("self_attn.gate_proj", "stack/layers/block/self_attn/gate_proj"),
-            ("cross.q_proj", "stack/layers/block/cross_attn/q_proj"),
-            ("cross.k_proj", "stack/layers/block/cross_attn/k_proj"),
-            ("cross.v_proj", "stack/layers/block/cross_attn/v_proj"),
-            ("cross.out_proj", "stack/layers/block/cross_attn/out_proj"),
-            ("cross.gate_proj", "stack/layers/block/cross_attn/gate_proj"),
-        ))
-        state |= norms("decoder.blocks", layer, (
-            ("norm", "stack/layers/block/ZCRMSNorm_0"),
-            ("post_attn_norm", "stack/layers/block/post_attn_norm"),
-            ("cross_norm", "stack/layers/block/cross_norm"),
-            ("post_cross_norm", "stack/layers/block/post_cross_norm"),
-            ("pre_hada_norm", "stack/layers/block/pre_hada_norm"),
-            ("self_attn.q_norm", "stack/layers/block/self_attn/q_norm"),
-            ("self_attn.k_norm", "stack/layers/block/self_attn/k_norm"),
-            ("cross.q_norm", "stack/layers/block/cross_attn/q_norm"),
-            ("cross.k_norm", "stack/layers/block/cross_attn/k_norm"),
-        ))
-        state |= taps("decoder.blocks", layer)
-        state[f"decoder.blocks.{layer}.attn_gate"] = rows("stack/layers/block/attn_gate")[layer]
-        state[f"decoder.blocks.{layer}.cross_gate"] = rows("stack/layers/block/cross_gate")[layer]
-        state |= {f"decoder.blocks.{layer}.mlp.{name}": rows(f"stack/layers/block/hadamard_mlp/{name}")[layer]
-                  for name in HADA_SLOTS}
-    for layer in range(rows("encoder/layers/block/attn_gate").shape[0]):
-        state |= channels("encoder.blocks", layer, (
-            ("attn.q_proj", "encoder/layers/block/self_attn/q_proj"),
-            ("attn.k_proj", "encoder/layers/block/self_attn/k_proj"),
-            ("attn.v_proj", "encoder/layers/block/self_attn/v_proj"),
-            ("attn.out_proj", "encoder/layers/block/self_attn/out_proj"),
-            ("attn.gate_proj", "encoder/layers/block/self_attn/gate_proj"),
-            ("conv.pw1", "encoder/layers/block/pw1"),
-            ("conv.pw2", "encoder/layers/block/pw2"),
-        ))
-        state |= norms("encoder.blocks", layer, (
-            ("norm", "encoder/layers/block/ZCRMSNorm_0"),
-            ("post_attn_norm", "encoder/layers/block/post_attn_norm"),
-            ("conv_norm", "encoder/layers/block/conv_norm"),
-            ("conv_out_norm", "encoder/layers/block/conv_out_norm"),
-            ("pre_hada_norm", "encoder/layers/block/pre_hada_norm"),
-            ("pre_hada_norm_0", "encoder/layers/block/pre_hada_norm_0"),
-            ("attn.q_norm", "encoder/layers/block/self_attn/q_norm"),
-            ("attn.k_norm", "encoder/layers/block/self_attn/k_norm"),
-        ))
-        state[f"encoder.blocks.{layer}.attn_gate"] = rows("encoder/layers/block/attn_gate")[layer]
-        state[f"encoder.blocks.{layer}.conv.dw.weight"] = rows("encoder/layers/block/dw")[layer].permute(2, 1, 0)
-        for kind, head in (("mlp", "encoder/layers/block/hadamard_mlp"), ("mlp0", "encoder/layers/block/hadamard_mlp_0")):
-            state |= {f"encoder.blocks.{layer}.{kind}.{name}": rows(f"{head}/{name}")[layer] for name in HADA_SLOTS}
-    return state
 
 
 def _is_content(token, tokenizer):

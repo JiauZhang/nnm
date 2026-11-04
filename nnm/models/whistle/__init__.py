@@ -1,3 +1,3 @@
-from .model import Whistle, WhistleConfig
+from .model import Whistle
 
-__all__ = ["Whistle", "WhistleConfig"]
+__all__ = ["Whistle"]

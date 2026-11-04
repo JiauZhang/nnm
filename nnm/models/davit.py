@@ -1,5 +1,6 @@
 from torch import nn
 
+
 class MLP(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU):
         super().__init__()

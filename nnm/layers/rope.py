@@ -1,135 +1,69 @@
-import math, torch
-from functools import lru_cache
+import math
+
+import torch
 from torch import nn
 
 
-def get_seq_idx(seq_len, use_cache=False, position=None):
-    if use_cache:
-        seq_idx = torch.arange(position, position + seq_len)
-    else:
-        seq_idx = torch.arange(seq_len)
-    return seq_idx
+def rotary_inv_freq(head_dim, base, rotary_dim=None):
+    rotary_dim = head_dim if rotary_dim is None else rotary_dim
+    assert 0 < rotary_dim <= head_dim and rotary_dim % 2 == 0
+    inv_freq = 1.0 / (base ** (torch.arange(0, rotary_dim, 2, dtype=torch.float32) / rotary_dim))
+    if rotary_dim < head_dim:
+        inv_freq = torch.cat([inv_freq, torch.zeros(head_dim // 2 - rotary_dim // 2)])
+    return inv_freq
 
 
-class BaseRoPE(nn.Module):
-    def __init__(self, *, max_seq_len, embed_dim, base=10000):
+def yarn_inv_freq(head_dim, base, factor, original_max_position, beta_fast=32, beta_slow=1):
+    pos_freqs = base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim)
+    extrapolation = 1.0 / pos_freqs
+    interpolation = 1.0 / (factor * pos_freqs)
+
+    def correction_dim(rotations):
+        return (head_dim * math.log(original_max_position / (rotations * 2 * math.pi))) / (2 * math.log(base))
+
+    low = max(math.floor(correction_dim(beta_fast)), 0)
+    high = min(math.ceil(correction_dim(beta_slow)), head_dim - 1)
+    span = high - low if high != low else 0.001
+    ramp = torch.clamp((torch.arange(head_dim // 2, dtype=torch.float32) - low) / span, 0, 1)
+    return interpolation * ramp + extrapolation * (1 - ramp)
+
+
+class RoPE(nn.Module):
+    def __init__(self, inv_freq, scaling=1.0):
         super().__init__()
-        assert (embed_dim % 2) == 0, 'embed_dim must be divided by 2'
-        self.max_seq_len = max_seq_len
-        self.embed_dim = embed_dim
-        self.base = base
-        self.precompute()
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.scaling = scaling
 
-    @torch.no_grad()
-    def precompute(self):
-        raise NotImplementedError
-
-    @lru_cache(maxsize=128)
-    def _get_pe(self, seq_len, use_cache=False, position=None):
-        seq_idx = get_seq_idx(seq_len, use_cache, position)
-        return self.sin[seq_idx, :], self.cos[seq_idx, :]
-
-    def forward(self, x, use_cache=False, position=None):
-        raise NotImplementedError
+    def forward(self, positions):
+        angles = positions[..., None].float() * self.inv_freq
+        embedding = torch.cat([angles, angles], dim=-1)
+        return embedding.cos() * self.scaling, embedding.sin() * self.scaling
 
 
-class RoPE(BaseRoPE):
-    @torch.no_grad()
-    def precompute(self):
-        theta = 1.0 / (self.base ** (torch.arange(0, self.embed_dim, 2, dtype=torch.float64) / self.embed_dim))
-        theta = theta.reshape(-1, 1).repeat(1, 2).reshape(-1)
-        m = torch.arange(self.max_seq_len, device=theta.device, dtype=torch.float64)
-        m_theta = torch.outer(m, theta)
-        self.cos = torch.cos(m_theta).to(dtype=torch.float32)
-        m_theta = (m_theta.reshape(-1, 2) * torch.tensor([-1, 1], dtype=torch.float64)).reshape(
-            self.max_seq_len, self.embed_dim
-        )
-        self.sin = torch.sin(m_theta).to(dtype=torch.float32)
+class RoPE2D(nn.Module):
+    def __init__(self, inv_freqs):
+        super().__init__()
+        self.num_axes = len(inv_freqs)
+        for index, inv_freq in enumerate(inv_freqs):
+            self.register_buffer(f"inv_freq_{index}", inv_freq, persistent=False)
 
-    def forward(self, x, use_cache=False, position=None):
-        shape = x.shape
-        assert shape[-1] == self.embed_dim
-        sin_pe, cos_pe = self._get_pe(shape[-2], use_cache, position)
-        y = x * cos_pe + x.reshape(-1, 2).flip(dims=[-1]).reshape(shape) * sin_pe
-        return y
+    def forward(self, positions):
+        angles = []
+        for index in range(self.num_axes):
+            inv_freq = getattr(self, f"inv_freq_{index}")
+            angles.append(positions[..., index].unsqueeze(-1).float() * inv_freq)
+        angle = torch.cat(angles, dim=-1)
+        embedding = torch.cat([angle, angle], dim=-1)
+        return embedding.cos(), embedding.sin()
 
 
-class QwenRoPE(BaseRoPE):
-    @torch.no_grad()
-    def precompute(self):
-        theta = 1.0 / (self.base ** (torch.arange(0, self.embed_dim, 2, dtype=torch.float64) / self.embed_dim))
-        m = torch.arange(self.max_seq_len, device=theta.device, dtype=torch.float64)
-        m_theta = torch.outer(m, theta)
-        sin_m_theta = torch.sin(m_theta)
-        self.sin = torch.cat([-sin_m_theta, sin_m_theta], dim=-1).to(dtype=torch.float32)
-        self.cos = torch.cos(m_theta).to(dtype=torch.float32).repeat(1, 2)
-
-    def forward(self, x, use_cache=False, position=None):
-        shape = x.shape
-        assert shape[-1] == self.embed_dim
-        sin_pe, cos_pe = self._get_pe(shape[-2], use_cache, position)
-        half_embed_dim = shape[-1] // 2
-        x1 = x[..., :half_embed_dim]
-        x2 = x[..., half_embed_dim:]
-        y = torch.cat((x2, x1), dim=-1)
-        y = (x * cos_pe) + (y * sin_pe)
-        return y
+def rotate_half(x):
+    first, second = x.chunk(2, dim=-1)
+    return torch.cat((-second, first), dim=-1)
 
 
-def find_correction_dim(num_rotations, embed_dim, base=10000, max_seq_len=2048):
-    return (embed_dim * math.log(max_seq_len/(num_rotations * 2 * math.pi)))/(2 * math.log(base))
-
-
-def find_correction_range(low_rot, high_rot, embed_dim, base=10000, max_seq_len=2048):
-    low = math.floor(find_correction_dim(low_rot, embed_dim, base, max_seq_len))
-    high = math.ceil(find_correction_dim(high_rot, embed_dim, base, max_seq_len))
-    return max(low, 0), min(high, embed_dim-1)
-
-
-def linear_ramp_mask(min, max, embed_dim):
-    if min == max: max += 0.001
-    linear_func = (torch.arange(embed_dim, dtype=torch.float32) - min) / (max - min)
-    ramp_func = torch.clamp(linear_func, 0, 1)
-    return ramp_func
-
-
-def get_temperature(scale=1):
-    if scale <= 1:
-        return 1.0
-    return 0.1 * math.log(scale) + 1.0
-
-
-class YaRN(BaseRoPE):
-    def __init__(self, *, max_seq_len, embed_dim, base=10000, scale=1, alpha=1, beta=32):
-        self.scale = scale
-        self.alpha = alpha
-        self.beta = beta
-        super().__init__(max_seq_len=max_seq_len, embed_dim=embed_dim, base=base)
-
-    @torch.no_grad()
-    def precompute(self):
-        pos_freqs = self.base ** (torch.arange(0, self.embed_dim, 2).float() / self.embed_dim)
-        inv_freq_extrapolation = 1.0 / pos_freqs
-        inv_freq_interpolation = 1.0 / (self.scale * pos_freqs)
-
-        low, high = find_correction_range(self.beta, self.alpha, self.embed_dim, self.base, self.max_seq_len)
-        inv_freq_mask = 1 - linear_ramp_mask(low, high, self.embed_dim // 2).float()
-        theta = inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
-        self.temperature = float(get_temperature(self.scale))
-
-        m = torch.arange(self.max_seq_len * self.scale, dtype=torch.float64)
-        m_theta = torch.outer(m, theta)
-        sin_m_theta = torch.sin(m_theta) * self.temperature
-        self.sin = torch.cat([-sin_m_theta, sin_m_theta], dim=-1).to(dtype=torch.float32)
-        self.cos = (torch.cos(m_theta) * self.temperature).to(dtype=torch.float32).repeat(1, 2)
-
-    def forward(self, x, use_cache=False, position=None):
-        shape = x.shape
-        assert shape[-1] == self.embed_dim
-        sin_pe, cos_pe = self._get_pe(shape[-2], use_cache, position)
-        half_embed_dim = shape[-1] // 2
-        x1 = x[..., :half_embed_dim]
-        x2 = x[..., half_embed_dim:]
-        y = torch.cat((x2, x1), dim=-1)
-        y = (x * cos_pe) + (y * sin_pe)
-        return y
+def apply_rope(x, cos, sin, dim=None):
+    if dim is not None:
+        cos, sin = cos.unsqueeze(dim), sin.unsqueeze(dim)
+    cos, sin = cos.float(), sin.float()
+    return (x.float() * cos + rotate_half(x.float()) * sin).to(x.dtype)

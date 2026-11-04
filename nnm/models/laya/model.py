@@ -13,13 +13,13 @@ class Laya(PretrainedModel):
     num_types = 3
     head_width = 256
     head_dropout = 0.1
-    weight_pattern = 'model.safetensors'
+    weight_pattern = "model.safetensors"
 
     @classmethod
     def load_config(cls, directory):
         config = super().load_config(directory)
-        config.encoder = Config.from_json(os.path.join(directory, 'encoder', 'config.json'))
-        agent = Config.from_json(os.path.join(directory, 'rl_agent_config.json'))
+        config.encoder = Config.from_json(os.path.join(directory, "encoder", "config.json"))
+        agent = Config.from_json(os.path.join(directory, "rl_agent_config.json"))
         config.head_layers = agent.head_layers
         config.num_actions = len(agent.act_costs) + 1
         return config

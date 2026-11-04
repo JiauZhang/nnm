@@ -1,13 +1,15 @@
-import torch, pytest, random, os
+import torch
+import pytest
+import os
 from torch import nn
 from transformers.models.lfm2 import modeling_lfm2 as lfm2
 from transformers.models.lfm2 import configuration_lfm2 as cfg
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
-from nnm.layers.rope import QwenRoPE
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from nnm.layers.rope import RoPE, rotary_inv_freq
+from nnm.layers.conv import ShortConv
 from nnm.models.lfm2 import (
     Lfm2Attention,
     Lfm2MLP,
-    Lfm2ShortConv,
     Lfm2DecoderLayer,
     Lfm2Backbone,
     Lfm2LM,
@@ -15,6 +17,7 @@ from nnm.models.lfm2 import (
 from conippets.config import Config
 
 parametrize = pytest.mark.parametrize
+
 
 def init_linear_weight(src, dst, bias=True):
     assert dst.weight.shape == src.weight.shape
@@ -40,9 +43,9 @@ def init_decoder_layer(nnm_decoder, hf_decoder):
         init_linear_weight(nnm_attn.q_proj, hf_attn.q_proj, bias=False)
         init_linear_weight(nnm_attn.k_proj, hf_attn.k_proj, bias=False)
         init_linear_weight(nnm_attn.v_proj, hf_attn.v_proj, bias=False)
-        init_linear_weight(nnm_attn.out_proj, hf_attn.out_proj, bias=False)
-        nnm_attn.q_layernorm.weight = torch.nn.Parameter(hf_attn.q_layernorm.weight.clone())
-        nnm_attn.k_layernorm.weight = torch.nn.Parameter(hf_attn.k_layernorm.weight.clone())
+        init_linear_weight(nnm_attn.o_proj, hf_attn.out_proj, bias=False)
+        nnm_attn.q_norm.weight = torch.nn.Parameter(hf_attn.q_layernorm.weight.clone())
+        nnm_attn.k_norm.weight = torch.nn.Parameter(hf_attn.k_layernorm.weight.clone())
     else:
         nnm_conv, hf_conv = nnm_decoder.conv, hf_decoder.conv
         nnm_conv.conv.weight = torch.nn.Parameter(hf_conv.conv.weight.clone())
@@ -56,7 +59,6 @@ def init_lfm2_backbone(nnm_backbone, hf_backbone):
     assert len(nnm_backbone.layers) == len(hf_backbone.layers)
     for nnm_decoder_layer, hf_decoder_layer in zip(nnm_backbone.layers, hf_backbone.layers):
         init_decoder_layer(nnm_decoder_layer, hf_decoder_layer)
-
 
 
 @parametrize("eps", [1e-6, 1e-5])
@@ -117,16 +119,16 @@ def test_lfm2_attn(batch, hidden_size, num_attention_heads, num_key_value_heads)
         head_dim=head_dim,
         norm_eps=1e-6,
     )
-    rope = QwenRoPE(max_seq_len=max_seq_len, embed_dim=head_dim, base=base)
+    rope = RoPE(rotary_inv_freq(head_dim, base))
     nnm_attn = Lfm2Attention(config=nnm_config, position_encoder=rope)
     hf_attn = lfm2.Lfm2Attention(config, layer_idx=0)
 
     init_linear_weight(nnm_attn.q_proj, hf_attn.q_proj, bias=False)
     init_linear_weight(nnm_attn.k_proj, hf_attn.k_proj, bias=False)
     init_linear_weight(nnm_attn.v_proj, hf_attn.v_proj, bias=False)
-    init_linear_weight(nnm_attn.out_proj, hf_attn.out_proj, bias=False)
-    nnm_attn.q_layernorm.weight = torch.nn.Parameter(hf_attn.q_layernorm.weight.clone())
-    nnm_attn.k_layernorm.weight = torch.nn.Parameter(hf_attn.k_layernorm.weight.clone())
+    init_linear_weight(nnm_attn.o_proj, hf_attn.out_proj, bias=False)
+    nnm_attn.q_norm.weight = torch.nn.Parameter(hf_attn.q_layernorm.weight.clone())
+    nnm_attn.k_norm.weight = torch.nn.Parameter(hf_attn.k_layernorm.weight.clone())
 
     hf_rope = lfm2.Lfm2RotaryEmbedding(config=config)
     hf_cos, hf_sin = hf_rope(x, position_ids)
@@ -144,7 +146,7 @@ def test_lfm2_short_conv(batch, seq_len, hidden_size):
     conv_L_cache = 3
     config = cfg.Lfm2Config(hidden_size=hidden_size, conv_L_cache=conv_L_cache, conv_bias=False)
     hf_conv = lfm2.Lfm2ShortConv(config, layer_idx=0)
-    nnm_conv = Lfm2ShortConv(config=Config(hidden_size=hidden_size, conv_L_cache=conv_L_cache, conv_bias=False))
+    nnm_conv = ShortConv(hidden_size=hidden_size, kernel_size=conv_L_cache, bias=False)
 
     nnm_conv.conv.weight = torch.nn.Parameter(hf_conv.conv.weight.clone())
     nnm_conv.in_proj.weight = torch.nn.Parameter(hf_conv.in_proj.weight.clone())
@@ -158,9 +160,7 @@ def test_lfm2_short_conv(batch, seq_len, hidden_size):
 @parametrize("num_key_value_heads", [8, 4])
 @parametrize("hidden_size, num_attention_heads", [(1024, 16), (512, 8)])
 @torch.no_grad()
-def test_lfm2_decoder_layer(
-    hidden_size, num_attention_heads, num_key_value_heads, is_attn
-):
+def test_lfm2_decoder_layer(hidden_size, num_attention_heads, num_key_value_heads, is_attn):
     batch, seq_len, max_seq_len, intermediate_size, base, eps = 1, 123, 512, 2560, 1000000.0, 1e-5
     head_dim = hidden_size // num_attention_heads
     full_attn_idxs = [0] if is_attn else []
@@ -188,7 +188,7 @@ def test_lfm2_decoder_layer(
         full_attn_idxs=full_attn_idxs,
         block_auto_adjust_ff_dim=False,
     )
-    rope = QwenRoPE(max_seq_len=max_seq_len, embed_dim=head_dim, base=base)
+    rope = RoPE(rotary_inv_freq(head_dim, base))
     nnm_decoder = Lfm2DecoderLayer(
         config=nnm_config, layer_idx=0, position_encoder=rope, is_attention_layer=is_attn, head_dim=head_dim
     )
@@ -253,23 +253,25 @@ def test_lfm2_backbone(batch, hidden_size, num_attention_heads, num_key_value_he
     torch.testing.assert_close(nnm_backbone(x), hf_backbone(input_ids=x)[0], atol=1e-2, rtol=1e-2)
 
 
-
 @parametrize("use_cache", [False, True])
-@parametrize("prompts", [
-    ["A", " Tell me more."],
-    ["Hello world", " What is it?"],
-    ["Python is a programming", " How does it work?"],
-    ["What are you", " Can you explain?"],
-    ["Who is", " Tell me about them."],
-])
+@parametrize(
+    "prompts",
+    [
+        ["A", " Tell me more."],
+        ["Hello world", " What is it?"],
+        ["Python is a programming", " How does it work?"],
+        ["What are you", " Can you explain?"],
+        ["Who is", " Tell me about them."],
+    ],
+)
 @torch.no_grad()
-def test_lfm2_pretrained(model_path, prompts, use_cache):
+def test_lfm2_pretrained(model_path, source_repo, prompts, use_cache):
     assert model_path is not None
 
     nnm_model = Lfm2LM.from_pretrained(model_path)
     nnm_model.eval()
 
-    weight_repo = getattr(nnm_model.config, '_nnm_weight_repo', model_path)
+    weight_repo = source_repo(model_path)
     weight_repo = os.path.expanduser(weight_repo)
 
     hf_model = AutoModelForCausalLM.from_pretrained(weight_repo, torch_dtype=torch.float32, device_map="cpu")
@@ -301,11 +303,11 @@ def test_lfm2_pretrained(model_path, prompts, use_cache):
             hf_out = hf_model(input_ids, past_key_values=hf_past_key_values, use_cache=True)
             hf_past_key_values = hf_out.past_key_values
             hf_logits = hf_out.logits
-            logits = nnm_model(input_ids)
+            nnm_model(input_ids)
         else:
             hf_out = hf_model(hf_input_ids, use_cache=False)
             hf_logits = hf_out.logits
-            logits = nnm_model(nnm_input_ids)
+            nnm_model(nnm_input_ids)
 
         next_token = hf_logits[:, -1, :].argmax(dim=-1, keepdim=True)
         hf_input_ids = torch.cat([hf_input_ids, next_token], dim=1)
@@ -316,11 +318,11 @@ def test_lfm2_pretrained(model_path, prompts, use_cache):
                 hf_out = hf_model(hf_input_ids[:, -1:], past_key_values=hf_past_key_values, use_cache=True)
                 hf_past_key_values = hf_out.past_key_values
                 hf_logits = hf_out.logits
-                logits = nnm_model(nnm_input_ids[:, -1:])
+                nnm_model(nnm_input_ids[:, -1:])
             else:
                 hf_out = hf_model(hf_input_ids, use_cache=False)
                 hf_logits = hf_out.logits
-                logits = nnm_model(nnm_input_ids)
+                nnm_model(nnm_input_ids)
 
             next_token = hf_logits[:, -1, :].argmax(dim=-1, keepdim=True)
             hf_input_ids = torch.cat([hf_input_ids, next_token], dim=1)

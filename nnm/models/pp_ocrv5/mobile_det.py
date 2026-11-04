@@ -1,29 +1,11 @@
-import re, torch
+import re
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from nnm.layers.activation import get_activation
+from nnm.layers.se import SqueezeExcitation
 from nnm.backbone.pp_lcnet_v3 import LCNetV3Encoder
 from conippets.config import Config
-
-
-class SqueezeExcitationModule(nn.Module):
-    def __init__(self, in_channels, reduction, activation="relu"):
-        super().__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(output_size=1)
-        self.conv1 = nn.Conv2d(
-            in_channels=in_channels, out_channels=in_channels // reduction, kernel_size=1, stride=1, padding=0
-        )
-        self.conv2 = nn.Conv2d(
-            in_channels=in_channels // reduction, out_channels=in_channels, kernel_size=1, stride=1, padding=0
-        )
-        self.act_fn = get_activation(activation) if activation is not None else nn.Identity()
-
-    def forward(self, hidden_states):
-        residual = hidden_states
-        hidden_states = self.avg_pool(hidden_states)
-        hidden_states = self.conv2(self.act_fn(self.conv1(hidden_states)))
-        hidden_states = torch.clip(0.2 * hidden_states + 0.5, min=0.0, max=1.0)
-        return residual * hidden_states
 
 
 class ResidualSqueezeExcitationLayer(nn.Module):
@@ -36,7 +18,7 @@ class ResidualSqueezeExcitationLayer(nn.Module):
             padding=int(kernel_size // 2),
             bias=False,
         )
-        self.squeeze_excitation_block = SqueezeExcitationModule(out_channels, reduction)
+        self.squeeze_excitation_block = SqueezeExcitation(out_channels, reduction)
 
     def forward(self, hidden_states):
         hidden_states = self.in_conv(hidden_states)

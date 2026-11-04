@@ -20,12 +20,12 @@ class AdaIN(nn.Module):
     def forward(self, x, style):
         x_norm = self.norm(x)
         style_params = self.fc(style)
-        gamma = style_params[:, :self.channels].unsqueeze(2)
-        beta = style_params[:, self.channels:].unsqueeze(2)
+        gamma = style_params[:, : self.channels].unsqueeze(2)
+        beta = style_params[:, self.channels :].unsqueeze(2)
         return x_norm * (gamma + 1.0) + beta
 
 
-def _interpolate_1d_half_pixel(x, target_size, mode='linear'):
+def _interpolate_1d_half_pixel(x, target_size, mode="linear"):
     B, C, L = x.shape
     positions = (torch.arange(target_size, device=x.device, dtype=x.dtype) + 0.5) * L / target_size - 0.5
     pos_floor = torch.clamp(torch.floor(positions).long(), 0, L - 1)
@@ -45,13 +45,13 @@ class NoiseResBlock(nn.Module):
         kernel_size=3,
         dilations1=(1, 3, 5),
         dilations2=(1, 1, 1),
-        padding_mode='auto',
+        padding_mode="auto",
         base_padding=None,
     ):
         super().__init__()
         self.padding_mode = padding_mode
 
-        if padding_mode == 'auto':
+        if padding_mode == "auto":
             paddings1 = [get_padding(kernel_size, d) for d in dilations1]
             paddings2 = [get_padding(kernel_size, 1) for _ in dilations2]
         else:
@@ -59,37 +59,27 @@ class NoiseResBlock(nn.Module):
             paddings1 = [bp * d for d in dilations1]
             paddings2 = [bp * d for d in dilations2]
 
-        self.convs1 = nn.ModuleList([
-            Conv1d(channels, channels, kernel_size, 1, padding=p, dilation=d)
-            for p, d in zip(paddings1, dilations1)
-        ])
-        self.convs2 = nn.ModuleList([
-            Conv1d(channels, channels, kernel_size, 1, padding=p, dilation=d)
-            for p, d in zip(paddings2, dilations2)
-        ])
+        self.convs1 = nn.ModuleList(
+            [Conv1d(channels, channels, kernel_size, 1, padding=p, dilation=d) for p, d in zip(paddings1, dilations1)]
+        )
+        self.convs2 = nn.ModuleList(
+            [Conv1d(channels, channels, kernel_size, 1, padding=p, dilation=d) for p, d in zip(paddings2, dilations2)]
+        )
 
         n_stages = len(dilations1)
         self.adain1 = nn.ModuleList([AdaIN(channels, style_dim) for _ in range(n_stages)])
         self.adain2 = nn.ModuleList([AdaIN(channels, style_dim) for _ in range(n_stages)])
 
-        self.alpha1 = nn.ParameterList([
-            nn.Parameter(torch.randn(1, channels, 1) * 0.02) for _ in range(n_stages)
-        ])
-        self.alpha2 = nn.ParameterList([
-            nn.Parameter(torch.randn(1, channels, 1) * 0.02) for _ in range(n_stages)
-        ])
+        self.alpha1 = nn.ParameterList([nn.Parameter(torch.randn(1, channels, 1) * 0.02) for _ in range(n_stages)])
+        self.alpha2 = nn.ParameterList([nn.Parameter(torch.randn(1, channels, 1) * 0.02) for _ in range(n_stages)])
 
-        self.reciprocal1 = nn.ParameterList([
-            nn.Parameter(torch.ones(1, channels, 1)) for _ in range(n_stages)
-        ])
-        self.reciprocal2 = nn.ParameterList([
-            nn.Parameter(torch.ones(1, channels, 1)) for _ in range(n_stages)
-        ])
+        self.reciprocal1 = nn.ParameterList([nn.Parameter(torch.ones(1, channels, 1)) for _ in range(n_stages)])
+        self.reciprocal2 = nn.ParameterList([nn.Parameter(torch.ones(1, channels, 1)) for _ in range(n_stages)])
 
     def _generate_noise(self, adain_output, alpha, reciprocal_const):
         scaled = adain_output * alpha
         sin_val = torch.sin(scaled)
-        pow_val = sin_val ** 2
+        pow_val = sin_val**2
         noise = reciprocal_const * pow_val
         return noise
 
@@ -97,8 +87,7 @@ class NoiseResBlock(nn.Module):
         prev_stage_output = x
 
         for c1, c2, ad1, ad2, a1, a2, r1, r2 in zip(
-            self.convs1, self.convs2, self.adain1, self.adain2,
-            self.alpha1, self.alpha2, self.reciprocal1, self.reciprocal2
+            self.convs1, self.convs2, self.adain1, self.adain2, self.alpha1, self.alpha2, self.reciprocal1, self.reciprocal2
         ):
             xt_adain = ad1(x, style)
             noise1 = self._generate_noise(xt_adain, a1, r1)
@@ -151,22 +140,18 @@ class MSinGenerator(nn.Module):
         phase_inc_expanded = phase_inc_expanded.unsqueeze(-1).expand(B, self.n_harmonics, T, self.hop_length)
         phase_inc_expanded = phase_inc_expanded.reshape(B, self.n_harmonics, audio_len)
 
-        phase_frame = _interpolate_1d_half_pixel(
-            phase_inc_expanded, T, mode='linear'
-        )
+        phase_frame = _interpolate_1d_half_pixel(phase_inc_expanded, T, mode="linear")
 
         phase_frame = torch.cumsum(phase_frame, dim=2)
         phase_frame = phase_frame * 2.0 * math.pi * self.hop_length
 
-        phase_sample = _interpolate_1d_half_pixel(
-            phase_frame, audio_len, mode='linear'
-        )
+        phase_sample = _interpolate_1d_half_pixel(phase_frame, audio_len, mode="linear")
 
         phase_sample = phase_sample.transpose(1, 2)
         sine_waves = torch.sin(phase_sample) * 0.1
 
         voiced_mask = (f0 > self.voiced_threshold).float()
-        voiced_mask_sample = F.interpolate(voiced_mask, size=audio_len, mode='nearest')
+        voiced_mask_sample = F.interpolate(voiced_mask, size=audio_len, mode="nearest")
         voiced_mask_expanded = voiced_mask_sample.transpose(1, 2).expand(B, audio_len, self.n_harmonics)
 
         sine_waves = sine_waves * voiced_mask_expanded
@@ -183,8 +168,8 @@ class MSource(nn.Module):
     def __init__(self, stft_real, stft_imag):
         super().__init__()
         self.sin_gen = MSinGenerator()
-        self.register_buffer('stft_real', stft_real)
-        self.register_buffer('stft_imag', stft_imag)
+        self.register_buffer("stft_real", stft_real)
+        self.register_buffer("stft_imag", stft_imag)
 
     def forward(self, f0):
         signal = self.sin_gen(f0)
@@ -194,7 +179,7 @@ class MSource(nn.Module):
         real = F.conv1d(signal, self.stft_real, stride=5, padding=0)
         imag = F.conv1d(signal, self.stft_imag, stride=5, padding=0)
 
-        magnitude = torch.sqrt(real ** 2 + imag ** 2 + 1e-8)
+        magnitude = torch.sqrt(real**2 + imag**2 + 1e-8)
         phase = torch.atan2(imag, real + 1e-8)
 
         return torch.cat([magnitude, phase], dim=1)
@@ -219,35 +204,48 @@ class KittenGenerator(nn.Module):
         self.resblocks = nn.ModuleList()
 
         for blk in c.up_blocks:
-            self.ups.append(ConvTranspose1d(
-                blk["in_channels"], blk["out_channels"],
-                kernel_size=blk["upsample_kernel_size"],
-                stride=blk["upsample_stride"],
-                padding=blk["upsample_padding"],
-            ))
-            self.noise_res.append(NoiseResBlock(
-                blk["out_channels"], style_dim=style_dim,
-                kernel_size=blk["noise_res_kernel_size"],
-                padding_mode=blk["noise_res_padding_mode"],
-                base_padding=blk["noise_res_base_padding"],
-            ))
-            self.noise_convs.append(Conv1d(
-                c.m_source_out, blk["out_channels"],
-                kernel_size=blk["noise_conv_kernel_size"],
-                stride=blk["noise_conv_stride"],
-                padding=blk["noise_conv_padding"],
-            ))
+            self.ups.append(
+                ConvTranspose1d(
+                    blk["in_channels"],
+                    blk["out_channels"],
+                    kernel_size=blk["upsample_kernel_size"],
+                    stride=blk["upsample_stride"],
+                    padding=blk["upsample_padding"],
+                )
+            )
+            self.noise_res.append(
+                NoiseResBlock(
+                    blk["out_channels"],
+                    style_dim=style_dim,
+                    kernel_size=blk["noise_res_kernel_size"],
+                    padding_mode=blk["noise_res_padding_mode"],
+                    base_padding=blk["noise_res_base_padding"],
+                )
+            )
+            self.noise_convs.append(
+                Conv1d(
+                    c.m_source_out,
+                    blk["out_channels"],
+                    kernel_size=blk["noise_conv_kernel_size"],
+                    stride=blk["noise_conv_stride"],
+                    padding=blk["noise_conv_padding"],
+                )
+            )
             for _ in range(blk["n_resblocks"]):
-                self.resblocks.append(NoiseResBlock(
-                    blk["out_channels"], style_dim=style_dim,
-                    kernel_size=blk["resblock_kernel_size"],
-                    dilations1=tuple(blk["resblock_dilations1"]),
-                    dilations2=tuple(blk["resblock_dilations2"]),
-                ))
+                self.resblocks.append(
+                    NoiseResBlock(
+                        blk["out_channels"],
+                        style_dim=style_dim,
+                        kernel_size=blk["resblock_kernel_size"],
+                        dilations1=tuple(blk["resblock_dilations1"]),
+                        dilations2=tuple(blk["resblock_dilations2"]),
+                    )
+                )
 
         last_blk = c.up_blocks[-1]
         self.conv_post = Conv1d(
-            last_blk["out_channels"], c.m_source_out,
+            last_blk["out_channels"],
+            c.m_source_out,
             kernel_size=c.conv_post_kernel_size,
             padding=c.conv_post_padding,
         )
@@ -270,21 +268,9 @@ class KittenGenerator(nn.Module):
         cos_val = torch.cos(sin_val)
         mul_real = exp_val * cos_val
 
-        imag_out = F.conv_transpose1d(
-            mul_imag,
-            self.stft_weight_backward_imag,
-            stride=5,
-            padding=0,
-            groups=1
-        )
+        imag_out = F.conv_transpose1d(mul_imag, self.stft_weight_backward_imag, stride=5, padding=0, groups=1)
 
-        real_out = F.conv_transpose1d(
-            mul_real,
-            self.stft_weight_backward_real,
-            stride=5,
-            padding=0,
-            groups=1
-        )
+        real_out = F.conv_transpose1d(mul_real, self.stft_weight_backward_real, stride=5, padding=0, groups=1)
 
         waveform = real_out - imag_out
         waveform = waveform[:, 0:1, 10:-10]
@@ -306,7 +292,7 @@ class KittenGenerator(nn.Module):
         for i, blk in enumerate(self.config.generator.up_blocks):
             x_up = self.ups[i](x)
             if blk["pad_left"] > 0:
-                x_up = F.pad(x_up, (blk["pad_left"], 0), mode='reflect')
+                x_up = F.pad(x_up, (blk["pad_left"], 0), mode="reflect")
 
             noise_conv = self.noise_convs[i](harmonic_features)
             if noise_conv.shape[2] < x_up.shape[2]:

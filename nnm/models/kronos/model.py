@@ -30,8 +30,9 @@ class KronosTokenizer(PretrainedModel):
             [TransformerBlock(config.d_model, config.n_heads, config.ff_dim) for _ in range(config.n_dec_layers - 1)]
         )
         self.quant_embed = nn.Linear(config.d_model, self.codebook_dim)
+        self.post_quant_embed_pre = nn.Linear(config.s1_bits, config.d_model)
         self.post_quant_embed = nn.Linear(self.codebook_dim, config.d_model)
-        self.tokenizer = BSQuantizer(config.s1_bits, config.s2_bits)
+        self.tokenizer = BSQuantizer(config.s1_bits, config.s2_bits, config.group_size)
 
     def encode(self, x, half=False):
         hidden = self.embed(x)

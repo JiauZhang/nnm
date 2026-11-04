@@ -1,16 +1,17 @@
 import torch
 from torch import nn
 
+
 class DropPath(nn.Module):
     def __init__(self, prob=0.5, normalization=True):
         super().__init__()
         if prob < 0.0 or prob > 1.0:
-            raise ValueError(f'DropPath probability has to be between 0 and 1, but got {prob}')
+            raise ValueError(f"DropPath probability has to be between 0 and 1, but got {prob}")
         self.prob = prob
         self.normalization = normalization
 
     def forward(self, input):
-        if self.prob == 0.0 or self.training == False:
+        if self.prob == 0.0 or not self.training:
             return input
         elif self.prob == 1.0:
             return torch.zeros_like(input)

@@ -3,7 +3,6 @@ import os
 import numpy as np
 import pytest
 import torch
-import torch.nn as nn
 
 from conippets.config import Config
 
@@ -20,7 +19,7 @@ from nnm.models.kitten_tts.text import text_to_tokens
 def config(request):
     model_path = request.config.getoption("--model-path")
     assert model_path is not None, "--model-path required"
-    config_path = os.path.join(model_path, 'config.json')
+    config_path = os.path.join(model_path, "config.json")
     return Config.from_json(config_path)
 
 
@@ -184,9 +183,8 @@ class TestSynthesis:
 
 class TestRegression:
     @torch.no_grad()
-    def test_from_pretrained_vs_direct_init(self, loaded_model):
-        path = loaded_model.model_path
-        voices_path = os.path.join(os.path.dirname(path), 'voices.npz')
+    def test_from_pretrained_vs_direct_init(self, loaded_model, model_path):
+        voices_path = os.path.join(model_path, "voices.npz")
 
         torch.manual_seed(42)
         np.random.seed(42)
@@ -194,9 +192,10 @@ class TestRegression:
 
         torch.manual_seed(42)
         np.random.seed(42)
-        config_path = os.path.join(os.path.dirname(path), 'config.json')
-        config = Config.from_json(config_path)
-        model2 = KittenTTS(config, model_path=path, voices_path=voices_path)
+        config = Config.from_json(os.path.join(model_path, "config.json"))
+        checkpoint = torch.load(os.path.join(model_path, "model.pth"), map_location="cpu", weights_only=True)
+        model2 = KittenTTS(config, voices_path=voices_path)
+        model2.load_state_dict(checkpoint.get("state_dict", checkpoint), strict=True)
         model2.eval()
         model2.generator.m_source.sin_gen.phase_jitter_scale = 0.0
         result2 = model2.synthesize("Hello world", voice="Bruno")

@@ -1,7 +1,8 @@
 import torch
 
-class EMA():
-    def __init__(self, model, device='cpu', decay=0.999):
+
+class EMA:
+    def __init__(self, model, device="cpu", decay=0.999):
         self.model = model
         self.decay = decay
         self.device = device

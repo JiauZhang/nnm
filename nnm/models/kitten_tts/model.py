@@ -2,7 +2,6 @@ import os
 
 import numpy as np
 import torch
-from conippets.config import Config
 from nnm.models.pretrained import PretrainedModel
 from nnm.models.albert import AlbertEncoder
 
@@ -14,7 +13,7 @@ from .text_encoder import TextEncoder
 
 
 class KittenTTS(PretrainedModel):
-    weight_pattern = 'model.pth'
+    weight_pattern = "model.pth"
 
     def __init__(self, config, voices_path=None):
         super().__init__()
@@ -34,7 +33,7 @@ class KittenTTS(PretrainedModel):
             self.load_voices(voices_path)
 
     def _post_load(self, directory):
-        voices_path = os.path.join(directory, 'voices.npz')
+        voices_path = os.path.join(directory, "voices.npz")
         if os.path.exists(voices_path):
             self.load_voices(voices_path)
 
@@ -45,7 +44,7 @@ class KittenTTS(PretrainedModel):
 
     def get_voice(self, name):
         if self._voices is None:
-            raise RuntimeError('No voices loaded. Call load_voices() first.')
+            raise RuntimeError("No voices loaded. Call load_voices() first.")
         key = self._voice_aliases.get(name, name)
         if key not in self._voices:
             available = list(self._voices.keys())
@@ -78,17 +77,17 @@ class KittenTTS(PretrainedModel):
         waveform = self.generator(mel, style, harmonic_features=stft_22ch)
 
         return {
-            'waveform': waveform,
-            'duration': duration,
-            'mel': mel,
-            'stft_features': stft_22ch,
+            "waveform": waveform,
+            "duration": duration,
+            "mel": mel,
+            "stft_features": stft_22ch,
         }
 
     @torch.no_grad()
     def synthesize(
         self,
         text,
-        voice='Bruno',
+        voice="Bruno",
         speed=None,
         trim_end=0,
     ):
@@ -102,7 +101,7 @@ class KittenTTS(PretrainedModel):
 
         voice_embeddings = self._voices[voice_key]
         ref_id = min(len(text), voice_embeddings.shape[0] - 1)
-        style_arr = voice_embeddings[ref_id:ref_id + 1]
+        style_arr = voice_embeddings[ref_id : ref_id + 1]
 
         input_ids = torch.tensor([tokens], dtype=torch.long)
         style = torch.from_numpy(style_arr.copy()).float()
@@ -110,17 +109,17 @@ class KittenTTS(PretrainedModel):
 
         result = self.infer(input_ids, style=style, speed=speed_val)
 
-        waveform = result['waveform'].cpu().numpy()
-        duration = result['duration'].cpu().numpy()
+        waveform = result["waveform"].cpu().numpy()
+        duration = result["duration"].cpu().numpy()
 
         if trim_end > 0:
             waveform = waveform[..., :-trim_end]
 
         return {
-            'waveform': waveform.flatten(),
-            'duration': duration,
-            'sample_rate': self.config.sample_rate,
-            'text': text,
-            'voice': voice,
-            'effective_speed': speed_val,
+            "waveform": waveform.flatten(),
+            "duration": duration,
+            "sample_rate": self.config.sample_rate,
+            "text": text,
+            "voice": voice,
+            "effective_speed": speed_val,
         }

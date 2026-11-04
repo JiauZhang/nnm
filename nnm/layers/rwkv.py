@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+
 class ChannelMix(nn.Module):
     def __init__(self, embed_dim):
         super().__init__()
@@ -30,6 +31,7 @@ class ChannelMix(nn.Module):
         xr = torch.lerp(x_t_1, x_t, self.time_mix_r)
         rkv = self.receptance(xr).sigmoid() * kv
         return rkv
+
 
 class TimeMix(nn.Module):
     def __init__(self, embed_dim):
@@ -78,7 +80,7 @@ class TimeMix(nn.Module):
         wkv = torch.empty_like(k)
         p = 0
         q = 0
-        o = torch.tensor(float('-inf'), dtype=u.dtype, device=u.device)
+        o = torch.tensor(float("-inf"), dtype=u.dtype, device=u.device)
         for idx in range(k.shape[-2]):
             k_t = k[:, idx]
             v_t = v[:, idx]

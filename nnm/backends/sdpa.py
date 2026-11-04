@@ -1,1 +1,1 @@
-from torch.nn.functional import scaled_dot_product_attention
+from torch.nn.functional import scaled_dot_product_attention as scaled_dot_product_attention

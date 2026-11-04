@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 
 import pytest
 import torch
@@ -6,22 +7,27 @@ import torch
 from nnm.models.kronos import Kronos, KronosTokenizer
 
 BACKBONES = {
-    'Kronos-mini': (256, 4, 4, 4108032),
-    'Kronos-small': (512, 8, 8, 24741376),
-    'Kronos-base': (832, 12, 16, 102310592),
+    "Kronos-mini": (256, 4, 4, 4108032),
+    "Kronos-small": (512, 8, 8, 24741376),
+    "Kronos-base": (832, 12, 16, 102310592),
 }
 
-TOKENIZERS = {'Kronos-Tokenizer-base': 4, 'Kronos-Tokenizer-2k': 5}
+TOKENIZERS = {"Kronos-Tokenizer-base": 4, "Kronos-Tokenizer-2k": 5}
+
+
+def repo(name):
+    root = os.environ.get("NNM_WEIGHTS_ROOT")
+    return os.path.join(root, name) if root else f"JiauZhang/{name}"
 
 
 @lru_cache(maxsize=None)
 def load_tokenizer(name):
-    return KronosTokenizer.from_pretrained(f'JiauZhang/{name}').eval()
+    return KronosTokenizer.from_pretrained(repo(name)).eval()
 
 
 @lru_cache(maxsize=None)
 def load_model(name):
-    return Kronos.from_pretrained(f'JiauZhang/{name}').eval()
+    return Kronos.from_pretrained(repo(name)).eval()
 
 
 def make_series(batch=2, length=16, features=6):
@@ -37,14 +43,14 @@ def make_tokens(batch=2, length=16, bits=10):
     return s1, s2, stamp
 
 
-@pytest.mark.parametrize('name', list(TOKENIZERS))
+@pytest.mark.parametrize("name", list(TOKENIZERS))
 class TestKronosTokenizer:
     def test_config_drives_the_architecture(self, name):
         tokenizer = load_tokenizer(name)
         assert tokenizer.config.d_model == 256
         assert tokenizer.config.n_enc_layers == 4
         assert tokenizer.config.group_size == TOKENIZERS[name]
-        assert sum(p.numel() for p in tokenizer.parameters()) == 3955226
+        assert sum(p.numel() for p in tokenizer.parameters()) == 3958042
 
     def test_encode_returns_two_ten_bit_streams(self, name):
         tokenizer = load_tokenizer(name)
@@ -79,7 +85,7 @@ class TestKronosTokenizer:
         assert torch.equal(tokenizer.decode(full), tokenizer.decode((pre, post), half=True))
 
 
-@pytest.mark.parametrize('name', list(BACKBONES))
+@pytest.mark.parametrize("name", list(BACKBONES))
 class TestKronos:
     def test_config_drives_the_architecture(self, name):
         model = load_model(name)

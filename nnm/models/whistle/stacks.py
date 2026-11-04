@@ -3,7 +3,11 @@ import math
 import torch
 from torch import nn
 
-from .layers import CrossAttention, Engram, HadamardMLP, MHCStack, SelfAttention, ZCRMSNorm, rms_unit
+from nnm.layers.norm import ZCRMSNorm, rms_unit
+from nnm.layers.position import sinusoidal_embedding
+from nnm.layers.rope import RoPE, rotary_inv_freq
+from nnm.layers.transformer import CrossAttention, SelfAttention
+from .layers import ConvSelfAttention, Engram, HadamardMLP, MHCStack
 
 
 class ConvolutionBlock(nn.Module):
@@ -31,10 +35,12 @@ class EncoderBlock(nn.Module):
             config.num_kv_heads,
             config.qk_head_dim,
             config.v_head_dim,
-            config.encoder_layers,
-            config.rope_theta,
-            qkv_conv_taps=0,
-            rope=True,
+            q_norm=True,
+            k_norm=True,
+            norm_factory=ZCRMSNorm,
+            output_gate="element",
+            causal=False,
+            rope=RoPE(rotary_inv_freq(config.qk_head_dim, config.rope_theta)),
         )
         self.post_attn_norm = ZCRMSNorm(config.d_model)
         self.attn_gate = nn.Parameter(torch.zeros(()))
@@ -59,23 +65,35 @@ class DecoderBlock(nn.Module):
     def __init__(self, config, cross_attention):
         super().__init__()
         self.norm = ZCRMSNorm(config.d_model)
-        self.self_attn = SelfAttention(
+        self.self_attn = ConvSelfAttention(
             config.d_model,
             config.num_heads,
             config.num_kv_heads,
             config.qk_head_dim,
             config.v_head_dim,
-            config.num_layers,
-            config.rope_theta,
-            qkv_conv_taps=config.qkv_conv_taps,
-            rope=True,
+            config.qkv_conv_taps,
+            q_norm=True,
+            k_norm=True,
+            norm_factory=ZCRMSNorm,
+            output_gate="element",
+            rope=RoPE(rotary_inv_freq(config.qk_head_dim, config.rope_theta)),
         )
         self.post_attn_norm = ZCRMSNorm(config.d_model)
         self.attn_gate = nn.Parameter(torch.zeros(()))
         self.cross_attention = cross_attention
         if cross_attention:
             self.cross_norm = ZCRMSNorm(config.d_model)
-            self.cross = CrossAttention(config.d_model, config.num_heads, config.qk_head_dim, config.v_head_dim)
+            self.cross = CrossAttention(
+                config.d_model,
+                config.num_heads,
+                config.qk_head_dim,
+                config.v_head_dim,
+                q_norm=True,
+                k_norm=True,
+                norm_factory=ZCRMSNorm,
+                output_gate="element",
+                return_attention=True,
+            )
             self.post_cross_norm = ZCRMSNorm(config.d_model)
             self.cross_gate = nn.Parameter(torch.zeros(()))
         self.pre_hada_norm = ZCRMSNorm(config.d_model)
@@ -83,7 +101,7 @@ class DecoderBlock(nn.Module):
 
     def forward(self, x, mask, memory=None):
         skip = x
-        attn = self.post_attn_norm(self.self_attn(self.norm(x), mask=mask))
+        attn = self.post_attn_norm(self.self_attn(self.norm(x), attn_mask=mask))
         x = skip + torch.sigmoid(self.attn_gate) * attn
         if self.cross_attention and memory is not None:
             cross = self.post_cross_norm(self.cross(self.cross_norm(x), memory))
@@ -116,10 +134,8 @@ class PositionEmbedding(nn.Module):
         self.d_model, self.theta = d_model, theta
 
     def forward(self, length, device, dtype):
-        half = self.d_model // 2
-        inv = 1.0 / (self.theta ** (torch.arange(half, dtype=torch.float32, device=device) / half))
-        angle = torch.arange(length, dtype=torch.float32, device=device)[:, None] * inv[None]
-        return torch.cat([angle.sin(), angle.cos()], -1).to(dtype)
+        positions = torch.arange(length, device=device)
+        return sinusoidal_embedding(positions, self.d_model, self.theta).to(dtype)
 
 
 class DecoderStack(nn.Module):

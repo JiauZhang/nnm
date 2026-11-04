@@ -41,6 +41,8 @@ class Lateral(nn.Module):
 
 
 class IndraOCRDetection(PretrainedModel):
+    module_name = "det"
+
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -88,7 +90,7 @@ class IndraOCRDetection(PretrainedModel):
 
         fused = self.lateral[-1](features[-1])
         for index in range(len(features) - 2, -1, -1):
-            fused = F.interpolate(fused, scale_factor=2, mode='nearest') + self.lateral[index](features[index])
+            fused = F.interpolate(fused, scale_factor=2, mode="nearest") + self.lateral[index](features[index])
 
         fused = F.hardswish(self.smooth(fused))
         stem_lateral = F.pixel_unshuffle(F.hardswish(self.stem_lateral(stem)), 2)

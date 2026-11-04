@@ -5,9 +5,9 @@ import espeakng_loader
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
 EspeakWrapper.set_library(espeakng_loader.get_library_path())
-os.environ['ESPEAK_DATA_PATH'] = espeakng_loader.get_data_path()
+os.environ["ESPEAK_DATA_PATH"] = espeakng_loader.get_data_path()
 
-import phonemizer
+import phonemizer  # noqa: E402
 
 _PHONEMIZER = None
 _CLEANER = None
@@ -16,9 +16,7 @@ _CLEANER = None
 def _get_phonemizer():
     global _PHONEMIZER
     if _PHONEMIZER is None:
-        _PHONEMIZER = phonemizer.backend.EspeakBackend(
-            language="en-us", preserve_punctuation=True, with_stress=True
-        )
+        _PHONEMIZER = phonemizer.backend.EspeakBackend(language="en-us", preserve_punctuation=True, with_stress=True)
     return _PHONEMIZER
 
 
@@ -32,8 +30,10 @@ def _get_cleaner():
 class TextCleaner:
     _PAD = "$"
     _PUNCTUATION = ';:,.!?¡¿—…"«»"" '
-    _LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-    _LETTERS_IPA = "ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ"
+    _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    _LETTERS_IPA = (
+        "ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ"
+    )
 
     def __init__(self):
         symbols = [self._PAD] + list(self._PUNCTUATION) + list(self._LETTERS) + list(self._LETTERS_IPA)
@@ -56,8 +56,8 @@ def ensure_punctuation(text):
     text = text.strip()
     if not text:
         return text
-    if text[-1] not in '.!?,;:':
-        text = text + ','
+    if text[-1] not in ".!?,;:":
+        text = text + ","
     return text
 
 
@@ -69,7 +69,7 @@ def phonemize(text):
 
 def _tokens_from_phonemes_str(phonemes_str):
     phonemes_list = basic_english_tokenize(phonemes_str)
-    joined = ' '.join(phonemes_list)
+    joined = " ".join(phonemes_list)
     cleaner = _get_cleaner()
     tokens = cleaner(joined)
     tokens.insert(0, 0)

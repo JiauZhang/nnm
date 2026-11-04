@@ -1,4 +1,5 @@
-import re, torch
+import re
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from nnm.layers.activation import get_activation
@@ -129,7 +130,9 @@ class ConvLayer(nn.Module):
 class EncoderWithSVTR(nn.Module):
     def __init__(self, config):
         super().__init__()
-        in_channels = make_divisible(config.backbone_config.block_configs[-1][-1][2] * config.backbone_config.scale, config.backbone_config.divisor)
+        in_channels = make_divisible(
+            config.backbone_config.block_configs[-1][-1][2] * config.backbone_config.scale, config.backbone_config.divisor
+        )
         hidden_size = config.hidden_size
         conv_configs = [
             (in_channels, in_channels // 8, config.conv_kernel_size),

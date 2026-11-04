@@ -1,12 +1,14 @@
 import numpy as np
 from collections import OrderedDict
 
+
 def count_parameter(model, precision=1, base=None):
     params = model.parameters()
     count = np.sum([np.prod(p.size()) for p in params]).item()
     if precision:
         count = format_count(count, precision=precision, base=base)
     return count
+
 
 def format_count(count, base=None, precision=1):
     base_map = OrderedDict(B=1e9, M=1e6, K=1e3)
@@ -23,6 +25,6 @@ def format_count(count, base=None, precision=1):
     else:
         return str(count)
 
-    fmt = '{:.' + f'{precision}' + 'f}'
+    fmt = "{:." + f"{precision}" + "f}"
     ret = fmt.format(value) + base
     return ret

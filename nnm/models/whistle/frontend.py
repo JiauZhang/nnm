@@ -1,5 +1,3 @@
-import math
-
 import torch
 from torch import nn
 
@@ -11,10 +9,13 @@ class LogMel(nn.Module):
 
     def __init__(self, config, floor=1e-10):
         super().__init__()
-        self.sample_rate, self.n_fft = config.sample_rate, config.n_fft
-        self.win_length, self.hop_length, self.floor = config.win_length, config.hop_length, floor
+        self.sample_rate = getattr(config, "sample_rate", 16000)
+        self.n_fft = config.n_fft
+        self.win_length = getattr(config, "win_length", 400)
+        self.hop_length = getattr(config, "hop_length", 160)
+        self.floor = floor
         self.register_buffer("fbank", torch.zeros(config.n_fft // 2 + 1, config.mel_bins), persistent=False)
-        self.register_buffer("window", torch.hann_window(config.win_length, periodic=False), persistent=False)
+        self.register_buffer("window", torch.hann_window(self.win_length, periodic=False), persistent=False)
 
     def forward(self, audio):
         power = self._spectrum(audio).abs().transpose(-2, -1).pow(2) @ self.fbank

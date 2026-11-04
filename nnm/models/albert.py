@@ -86,7 +86,7 @@ class AlbertLayer(nn.Module):
     def forward(self, hidden_states, attention_mask=None):
         attention_output = self.attention(hidden_states, attention_mask)
         ffn_output = self.ffn(attention_output)
-        ffn_output = F.gelu(ffn_output, approximate='tanh')
+        ffn_output = F.gelu(ffn_output, approximate="tanh")
         ffn_output = self.ffn_output(ffn_output)
         ffn_output = self.dropout(ffn_output)
         hidden_states = self.full_layer_layer_norm(ffn_output + attention_output)

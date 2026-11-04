@@ -1,25 +1,14 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
+
+from nnm.layers.norm import rms_unit
+from nnm.layers.transformer import SelfAttention
 
 HADA_PERM_SEEDS = (11, 13)
 HADA_COND_RANK = 8
 SINKHORN_ITERS = 20
-RMS_EPS = 1e-6
-
-
-class ZCRMSNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.scale = nn.Parameter(torch.zeros(dim))
-
-    def forward(self, x):
-        rms = torch.sqrt(x.pow(2).mean(-1, keepdim=True) + RMS_EPS)
-        return (1 + self.scale) * x / rms
-
-
-def rms_unit(x, eps=RMS_EPS):
-    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
 
 
 def sinkhorn(logits, iters=SINKHORN_ITERS):
@@ -129,104 +118,26 @@ class MHCStack(nn.Module):
         return torch.einsum("btij,btjc->btic", h_res, stream) + h_post[..., None] * delta[:, :, None, :]
 
 
-class RoPE(nn.Module):
-    def __init__(self, head_dim, theta):
-        super().__init__()
-        self.head_dim, self.theta = head_dim, theta
+class ConvSelfAttention(SelfAttention):
+    def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim, v_head_dim, qkv_conv, **kwargs):
+        super().__init__(hidden_size, num_heads, num_kv_heads, head_dim, v_head_dim, **kwargs)
+        self.q_conv = nn.Conv1d(num_heads * head_dim, num_heads * head_dim, qkv_conv, groups=num_heads * head_dim, bias=False)
+        self.k_conv = nn.Conv1d(
+            num_kv_heads * head_dim, num_kv_heads * head_dim, qkv_conv, groups=num_kv_heads * head_dim, bias=False
+        )
+        self.v_conv = nn.Conv1d(
+            num_kv_heads * v_head_dim, num_kv_heads * v_head_dim, qkv_conv, groups=num_kv_heads * v_head_dim, bias=False
+        )
 
-    def forward(self, x):
-        length = x.shape[-2]
-        freqs = 1.0 / (self.theta ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32, device=x.device) / self.head_dim))
-        angle = torch.arange(length, dtype=torch.float32, device=x.device)[:, None] * freqs[None]
-        cos, sin = angle.cos()[None, None], angle.sin()[None, None]
-        half = self.head_dim // 2
-        x1, x2 = x[..., :half], x[..., half:]
-        return torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
-
-
-class SelfAttention(nn.Module):
-    def __init__(
-        self, d_model, num_heads, num_kv_heads, qk_head_dim, v_head_dim, num_layers, theta, qkv_conv_taps=0, rope=True
-    ):
-        super().__init__()
-        self.num_heads, self.num_kv_heads = num_heads, num_kv_heads
-        self.qk_head_dim, self.v_head_dim = qk_head_dim, v_head_dim
-        self.repeats = num_heads // num_kv_heads
-        self.scaling = qk_head_dim**-0.5
-        self.q_proj = nn.Linear(d_model, num_heads * qk_head_dim, bias=False)
-        self.k_proj = nn.Linear(d_model, num_kv_heads * qk_head_dim, bias=False)
-        self.v_proj = nn.Linear(d_model, num_kv_heads * v_head_dim, bias=False)
-        self.out_proj = nn.Linear(num_heads * v_head_dim, d_model, bias=False)
-        self.gate_proj = nn.Linear(d_model, num_heads * v_head_dim, bias=False)
-        self.q_norm = ZCRMSNorm(qk_head_dim)
-        self.k_norm = ZCRMSNorm(qk_head_dim)
-        self.taps = qkv_conv_taps
-        if self.taps:
-            self.q_taps = nn.Parameter(torch.zeros(self.taps, num_heads * qk_head_dim))
-            self.k_taps = nn.Parameter(torch.zeros(self.taps, num_kv_heads * qk_head_dim))
-            self.v_taps = nn.Parameter(torch.zeros(self.taps, num_kv_heads * v_head_dim))
-        self.rope = RoPE(qk_head_dim, theta) if rope else None
-
-    def forward(self, x, mask=None):
-        batch, length, _ = x.shape
-        q, k, v = self.q_proj(x), self.k_proj(x), self.v_proj(x)
-        if self.taps:
-            q = _apply_taps(q, self.q_taps, self.taps, mask)
-            k = _apply_taps(k, self.k_taps, self.taps, mask)
-            v = _apply_taps(v, self.v_taps, self.taps, mask)
-        q = self.q_norm(q.reshape(batch, length, self.num_heads, self.qk_head_dim).transpose(1, 2))
-        k = self.k_norm(k.reshape(batch, length, self.num_kv_heads, self.qk_head_dim).transpose(1, 2))
-        v = v.reshape(batch, length, self.num_kv_heads, self.v_head_dim).transpose(1, 2)
-        if self.rope is not None:
-            q, k = self.rope(q), self.rope(k)
-        if self.repeats > 1:
-            k = k.repeat_interleave(self.repeats, 1)
-            v = v.repeat_interleave(self.repeats, 1)
-        scores = q @ k.transpose(-1, -2) * self.scaling
-        if mask is not None:
-            scores = scores.masked_fill(~mask, float("-inf"))
-        out = (scores.softmax(-1) @ v).transpose(1, 2).reshape(batch, length, -1)
-        return self.out_proj(out * torch.sigmoid(self.gate_proj(x)))
+    def project(self, x):
+        query, key, value = super().project(x)
+        return _apply_conv(query, self.q_conv), _apply_conv(key, self.k_conv), _apply_conv(value, self.v_conv)
 
 
-def _apply_taps(z, taps, count, mask):
-    length = z.shape[1]
-    out = taps[0] * z
-    for tap in range(1, count):
-        shifted = torch.cat([torch.zeros_like(z[:, :tap]), z[:, :-tap]], dim=1)
-        if mask is not None:
-            shifted = shifted * (torch.arange(length, device=z.device) >= tap).to(z.dtype)[None, :, None]
-        out = out + taps[tap] * shifted
-    return out
-
-
-class CrossAttention(nn.Module):
-    def __init__(self, d_model, num_heads, qk_head_dim, v_head_dim):
-        super().__init__()
-        self.num_heads = num_heads
-        self.qk_head_dim, self.v_head_dim = qk_head_dim, v_head_dim
-        self.scaling = qk_head_dim**-0.5
-        self.q_proj = nn.Linear(d_model, num_heads * qk_head_dim, bias=False)
-        self.k_proj = nn.Linear(d_model, num_heads * qk_head_dim, bias=False)
-        self.v_proj = nn.Linear(d_model, num_heads * v_head_dim, bias=False)
-        self.out_proj = nn.Linear(num_heads * v_head_dim, d_model, bias=False)
-        self.gate_proj = nn.Linear(d_model, num_heads * v_head_dim, bias=False)
-        self.q_norm = ZCRMSNorm(qk_head_dim)
-        self.k_norm = ZCRMSNorm(qk_head_dim)
-
-    def forward(self, x, memory):
-        batch, length, _ = x.shape
-        q = self.q_proj(x).reshape(batch, length, self.num_heads, self.qk_head_dim)
-        k = self.k_proj(memory).reshape(batch, -1, self.num_heads, self.qk_head_dim)
-        v = self.v_proj(memory).reshape(batch, -1, self.num_heads, self.v_head_dim)
-        q = self.q_norm(q.transpose(1, 2))
-        k = self.k_norm(k.transpose(1, 2))
-        v = v.transpose(1, 2)
-        scores = q @ k.transpose(-1, -2) * self.scaling
-        weights = scores.softmax(-1)
-        self.attention = weights.detach()
-        out = (weights @ v).transpose(1, 2).reshape(batch, length, -1)
-        return self.out_proj(out * torch.sigmoid(self.gate_proj(x)))
+def _apply_conv(x, conv):
+    hidden = x.transpose(1, 2)
+    hidden = F.pad(hidden, (conv.kernel_size[0] - 1, 0))
+    return conv(hidden).transpose(1, 2)
 
 
 class Engram(nn.Module):

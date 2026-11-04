@@ -121,14 +121,18 @@ class PredictorBlock1(nn.Module):
         batch, ch, t = x.shape
         t2 = t * 2
 
-        x_up = F.interpolate(x, size=t2, mode='nearest')
+        x_up = F.interpolate(x, size=t2, mode="nearest")
         skip = self.conv1x1(x_up)
 
         h, _ = self.norm1(x, style, shared_in=None)
         h = F.conv_transpose1d(
-            h, self.pool_weight, self.pool_bias,
-            stride=self.pool_stride, padding=self.pool_padding,
-            output_padding=self.pool_output_padding, groups=h.shape[1]
+            h,
+            self.pool_weight,
+            self.pool_bias,
+            stride=self.pool_stride,
+            padding=self.pool_padding,
+            output_padding=self.pool_output_padding,
+            groups=h.shape[1],
         )
         h = self.conv1(h)
         h, _ = self.norm2(h, style)
@@ -173,7 +177,13 @@ class PredictorBranch(nn.Module):
         leaky_relu_slope=0.2,
     ):
         super().__init__()
-        self.block0 = PredictorBlock0(channels=in_channels, style_dim=style_dim, has_affine_norm=block0_has_affine, leaky_relu_slope=leaky_relu_slope, residual_scale=residual_scale)
+        self.block0 = PredictorBlock0(
+            channels=in_channels,
+            style_dim=style_dim,
+            has_affine_norm=block0_has_affine,
+            leaky_relu_slope=leaky_relu_slope,
+            residual_scale=residual_scale,
+        )
         self.block1 = PredictorBlock1(
             in_channels=in_channels,
             out_channels=out_channels,
@@ -183,7 +193,9 @@ class PredictorBranch(nn.Module):
             residual_scale=residual_scale,
             leaky_relu_slope=leaky_relu_slope,
         )
-        self.block2 = PredictorBlock2(channels=out_channels, style_dim=style_dim, leaky_relu_slope=leaky_relu_slope, residual_scale=residual_scale)
+        self.block2 = PredictorBlock2(
+            channels=out_channels, style_dim=style_dim, leaky_relu_slope=leaky_relu_slope, residual_scale=residual_scale
+        )
         self.proj = nn.Conv1d(out_channels, 1, kernel_size=proj_kernel)
 
     def forward(self, x, style, shared_in=None):

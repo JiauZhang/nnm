@@ -37,8 +37,8 @@ class SlidingWindowKVCache(Cache):
     def update(self, k, v):
         if self._k_cache is None:
             if k.shape[-2] > self.window_size:
-                self._k_cache = k[..., -self.window_size:, :].clone()
-                self._v_cache = v[..., -self.window_size:, :].clone()
+                self._k_cache = k[..., -self.window_size :, :].clone()
+                self._v_cache = v[..., -self.window_size :, :].clone()
             else:
                 self._k_cache = k.clone()
                 self._v_cache = v.clone()
@@ -55,12 +55,12 @@ class SlidingWindowKVCache(Cache):
             else:
                 self._k_cache = torch.cat([self._k_cache, k], dim=-2)
                 self._v_cache = torch.cat([self._v_cache, v], dim=-2)
-                self._k_cache = self._k_cache[..., -self.window_size:, :].clone()
-                self._v_cache = self._v_cache[..., -self.window_size:, :].clone()
+                self._k_cache = self._k_cache[..., -self.window_size :, :].clone()
+                self._v_cache = self._v_cache[..., -self.window_size :, :].clone()
         else:
             if new_seq_len >= self.window_size:
-                self._k_cache = k[..., -self.window_size:, :].clone()
-                self._v_cache = v[..., -self.window_size:, :].clone()
+                self._k_cache = k[..., -self.window_size :, :].clone()
+                self._v_cache = v[..., -self.window_size :, :].clone()
             else:
                 keep_len = self.window_size - new_seq_len
                 self._k_cache[..., :-new_seq_len, :] = self._k_cache[..., -keep_len:, :]

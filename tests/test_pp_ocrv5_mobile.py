@@ -1,8 +1,11 @@
-import pytest, requests, torch
+import pytest
+import requests
+import torch
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForObjectDetection, AutoModelForTextRecognition
 from nnm.models.pp_ocrv5.mobile_det import PPOCRv5MobileDetectionModel
 from nnm.models.pp_ocrv5.mobile_rec import PPOCRv5MobileRecognitionModel
+
 
 def test_pp_ocrv5_mobile_det():
     model_path = "./PP-OCRv5_mobile_det_safetensors"
@@ -29,15 +32,20 @@ def test_pp_ocrv5_mobile_det():
     assert original_logits.shape == new_logits.shape
     assert original_logits.cpu().numpy() == pytest.approx(new_logits.cpu().numpy(), abs=1e-4)
 
+
 def test_pp_ocrv5_mobile_rec():
-    model_path="./PP-OCRv5_mobile_rec_safetensors"
+    model_path = "./PP-OCRv5_mobile_rec_safetensors"
     model = AutoModelForTextRecognition.from_pretrained(model_path, device_map="auto")
     image_processor = AutoImageProcessor.from_pretrained(model_path)
 
     nnm_model = PPOCRv5MobileRecognitionModel()
     nnm_model.load_hf_state_dict(model.state_dict())
 
-    image = Image.open(requests.get("https://paddle-model-ecology.bj.bcebos.com/paddlex/imgs/demo_image/general_ocr_rec_001.png", stream=True).raw).convert("RGB")
+    image = Image.open(
+        requests.get(
+            "https://paddle-model-ecology.bj.bcebos.com/paddlex/imgs/demo_image/general_ocr_rec_001.png", stream=True
+        ).raw
+    ).convert("RGB")
     inputs = image_processor(images=image, return_tensors="pt").to(model.device)
     test_input = inputs["pixel_values"]
 

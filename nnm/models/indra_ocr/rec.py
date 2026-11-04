@@ -54,15 +54,23 @@ class RowContext(nn.Module):
 
 
 class IndraOCRRecognition(PretrainedModel):
-    def __init__(self, config):
+    module_name = "rec"
+
+    @classmethod
+    def manifest_key(cls, **kwargs):
+        variant = kwargs.get("variant")
+        return f"{cls.module_name}_{variant}" if variant else cls.module_name
+
+    def __init__(self, config, variant=None):
         super().__init__()
         self.config = config
+        self.variant = variant
         self.band = (config.image_height - config.band_height) // 2
 
         timestep = config.timestep
         self.stem = nn.Conv2d(1, config.channels, (config.band_height, timestep), stride=(config.band_height, timestep))
         self.stem_bn = nn.BatchNorm1d(config.channels)
-        self.context = RowContext(config)
+        self.context = RowContext(config) if config.get("context", True) else None
         self.blocks = nn.ModuleList(
             [
                 ConvBlock(config.channels, config.expand_channels, config.reduced_channels, config.kernel_size)
@@ -73,7 +81,8 @@ class IndraOCRRecognition(PretrainedModel):
 
     def forward(self, x, widths):
         hidden = self.stem(x[:, :, self.band : self.band + self.config.band_height]).squeeze(2)
-        hidden = F.hardswish(self.stem_bn(hidden + self.context(x)))
+        hidden = hidden + self.context(x) if self.context is not None else hidden
+        hidden = F.hardswish(self.stem_bn(hidden))
 
         lengths = self.lengths(widths, hidden.shape[-1])
         mask = (torch.arange(hidden.shape[-1], device=x.device) < lengths[:, None]).to(hidden.dtype).unsqueeze(1)
@@ -93,10 +102,10 @@ class IndraOCRRecognition(PretrainedModel):
         log_probs = torch.log_softmax(logits, dim=-1)
         values, indices = log_probs.topk(self.config.topk, dim=-1)
         return {
-            'ids': logits.argmax(dim=-1),
-            'conf': torch.softmax(logits, dim=-1).max(dim=-1).values,
-            'lengths': self.lengths(widths, logits.shape[1]),
-            'blank': log_probs[..., 0],
-            'topv': values,
-            'topi': indices,
+            "ids": logits.argmax(dim=-1),
+            "conf": torch.softmax(logits, dim=-1).max(dim=-1).values,
+            "lengths": self.lengths(widths, logits.shape[1]),
+            "blank": log_probs[..., 0],
+            "topv": values,
+            "topi": indices,
         }

@@ -1,16 +1,22 @@
-import torch, pytest, random, os
+import torch
+import pytest
+import random
+import os
 from torch import nn
 from transformers.models.qwen2 import modeling_qwen2 as qwen2
 from transformers.models.qwen2 import configuration_qwen2 as cfg
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
-from nnm.layers.rope import QwenRoPE
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from nnm.layers.rope import RoPE, rotary_inv_freq
+from nnm.layers.transformer import SelfAttention
 from nnm.models.qwen2 import (
-    Qwen2Attention, Qwen2MLP, Qwen2DecoderLayer, Qwen2Backbone,
+    Qwen2MLP,
+    Qwen2DecoderLayer,
+    Qwen2Backbone,
     Qwen2LM,
 )
-from conippets.config import Config
 
 parametrize = pytest.mark.parametrize
+
 
 def init_linear_weight(src, dst, bias=True):
     assert dst.weight.shape == src.weight.shape
@@ -18,6 +24,7 @@ def init_linear_weight(src, dst, bias=True):
     if bias:
         assert dst.bias.shape == src.bias.shape
         dst.bias = src.bias
+
 
 def init_linear_weight_kv(nnm_k_proj, nnm_v_proj, hf_k_proj, hf_v_proj):
     assert nnm_k_proj.weight.shape == hf_k_proj.weight.shape
@@ -30,6 +37,7 @@ def init_linear_weight_kv(nnm_k_proj, nnm_v_proj, hf_k_proj, hf_v_proj):
     nnm_v_proj.weight = torch.nn.Parameter(hf_v_proj.weight.clone())
     nnm_v_proj.bias = torch.nn.Parameter(hf_v_proj.bias.clone())
 
+
 @parametrize("num_kv_heads", [4, 8])
 @parametrize("embed_dim", [32, 64])
 @parametrize("batch", [1, 2])
@@ -41,17 +49,24 @@ def test_qwen2_attn(batch, embed_dim, num_kv_heads):
     position_ids = torch.arange(seq_len)
     head_dim = embed_dim // num_attn_heads
 
-    rope = QwenRoPE(max_seq_len=max_seq_len, embed_dim=head_dim, base=base)
-    nnm_cos = rope.cos[position_ids, :]
-    nnm_sin = rope.sin[position_ids, :]
-    nnm_attn = Qwen2Attention(
-        embed_dim=embed_dim, num_attn_heads=num_attn_heads,
-        num_kv_heads=num_kv_heads, position_encoder=rope,
+    rope = RoPE(rotary_inv_freq(head_dim, base))
+    nnm_cos, nnm_sin = rope(position_ids)
+    nnm_attn = SelfAttention(
+        embed_dim,
+        num_attn_heads,
+        num_kv_heads,
+        qkv_bias=True,
+        o_bias=False,
+        rope=rope,
     )
 
     config = cfg.Qwen2Config(
-        hidden_size=embed_dim, num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads,
-        head_dim=head_dim, rope_theta=base, max_position_embeddings=max_seq_len,
+        hidden_size=embed_dim,
+        num_attention_heads=num_attn_heads,
+        num_key_value_heads=num_kv_heads,
+        head_dim=head_dim,
+        rope_theta=base,
+        max_position_embeddings=max_seq_len,
     )
     config._attn_implementation = "sdpa"
     hf_attn = qwen2.Qwen2Attention(config, 0)
@@ -79,7 +94,6 @@ def test_qwen2_attn(batch, embed_dim, num_kv_heads):
     position_ids = position_ids.unsqueeze(0)
     hf_cos, hf_sin = hf_rope(x, position_ids)
 
-    nnm_sin[:, :(head_dim//2)] = -nnm_sin[:, :(head_dim//2)]
     nnm_sin = nnm_sin.unsqueeze(0)
     nnm_cos = nnm_cos.unsqueeze(0)
 
@@ -93,6 +107,7 @@ def test_qwen2_attn(batch, embed_dim, num_kv_heads):
     hf_o, hf_attn_weight = hf_attn(x, (hf_cos, hf_sin), None)
     assert nnm_o.shape == hf_o.shape
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
+
 
 @parametrize("eps", [1e-6, 1e-8])
 @parametrize("embed_dim", [64, 128])
@@ -112,10 +127,12 @@ def test_qwen2_rms_norm(batch, seq_len, embed_dim, eps):
     assert nnm_o.shape == hf_o.shape
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 
+
 def init_mlp_weight(src, dst):
     init_linear_weight(src.gate_proj, dst.gate_proj, bias=False)
     init_linear_weight(src.up_proj, dst.up_proj, bias=False)
     init_linear_weight(src.down_proj, dst.down_proj, bias=False)
+
 
 @parametrize("intermediate_size", [256, 384])
 @parametrize("embed_dim", [64, 128])
@@ -133,32 +150,43 @@ def test_qwen2_mlp(batch, seq_len, embed_dim, intermediate_size):
     hf_o = hf_mlp(x)
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 
+
 def init_decoder_layer(nnm_decoder, hf_decoder):
     init_mlp_weight(nnm_decoder.mlp, hf_decoder.mlp)
-    init_linear_weight(nnm_decoder.norm_1, hf_decoder.input_layernorm, bias=False)
-    init_linear_weight(nnm_decoder.norm_2, hf_decoder.post_attention_layernorm, bias=False)
-    nnm_attn, hf_attn = nnm_decoder.attn, hf_decoder.self_attn
+    init_linear_weight(nnm_decoder.input_layernorm, hf_decoder.input_layernorm, bias=False)
+    init_linear_weight(nnm_decoder.post_attention_layernorm, hf_decoder.post_attention_layernorm, bias=False)
+    nnm_attn, hf_attn = nnm_decoder.self_attn, hf_decoder.self_attn
     init_linear_weight(nnm_attn.q_proj, hf_attn.q_proj)
     init_linear_weight(nnm_attn.o_proj, hf_attn.o_proj, bias=False)
     init_linear_weight_kv(nnm_attn.k_proj, nnm_attn.v_proj, hf_attn.k_proj, hf_attn.v_proj)
     hf_decoder.eval()
+
 
 @parametrize("num_kv_heads", [4, 8])
 @parametrize("embed_dim, num_attn_heads", [(96, 16), (128, 32)])
 @parametrize("batch", [1, 2])
 @torch.no_grad()
 def test_qwen2_decoder_layer(batch, embed_dim, num_attn_heads, num_kv_heads):
-    max_seq_len, seq_len, intermediate_size, base, eps = 512, 123, 256, 23432, 1e-6
+    seq_len, intermediate_size, base, eps = 123, 256, 23432, 1e-6
     head_dim = embed_dim // num_attn_heads
-    nnm_rope = QwenRoPE(max_seq_len=max_seq_len, embed_dim=head_dim, base=base)
+    nnm_rope = RoPE(rotary_inv_freq(head_dim, base))
     nnm_decoder = Qwen2DecoderLayer(
-        position_encoder=nnm_rope, embed_dim=embed_dim, intermediate_size=intermediate_size,
-        num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, eps=eps,
+        position_encoder=nnm_rope,
+        embed_dim=embed_dim,
+        intermediate_size=intermediate_size,
+        num_attn_heads=num_attn_heads,
+        num_kv_heads=num_kv_heads,
+        eps=eps,
     )
     config = cfg.Qwen2Config(
-        hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu",
-        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads,
-        rms_norm_eps=eps, head_dim=head_dim, rope_theta=base,
+        hidden_size=embed_dim,
+        intermediate_size=intermediate_size,
+        hidden_act="silu",
+        num_attention_heads=num_attn_heads,
+        num_key_value_heads=num_kv_heads,
+        rms_norm_eps=eps,
+        head_dim=head_dim,
+        rope_theta=base,
     )
     config._attn_implementation = "sdpa"
     hf_rope = qwen2.Qwen2RotaryEmbedding(config)
@@ -186,35 +214,57 @@ def init_qwen2_backbone(nnm_backbone, hf_backbone):
         init_decoder_layer(nnm_decoder_layer, hf_decoder_layer)
     hf_backbone.norm.weight = nnm_backbone.norm.weight
 
+
 def random_causal_mask(x):
     batch, seq_len = x.shape
     attn_mask = torch.ones_like(x, dtype=torch.float32)
     min_idx = max(1, (seq_len - 1) // 2)
     for b in range(batch):
-        idx = random.randint(min_idx, seq_len-1)
+        idx = random.randint(min_idx, seq_len - 1)
         attn_mask[b, idx:] = 0
     return attn_mask
+
 
 @parametrize("num_kv_heads", [4, 8])
 @parametrize("embed_dim, num_attn_heads", [(96, 16), (128, 32)])
 @parametrize("batch", [1, 2])
 @torch.no_grad()
 def test_qwen2_backbone(
-    batch, embed_dim, num_attn_heads, num_kv_heads,
+    batch,
+    embed_dim,
+    num_attn_heads,
+    num_kv_heads,
 ):
     max_seq_len, seq_len, intermediate_size, base, eps = 512, 123, 256, 23432, 1e-6
     vocab_size, num_hidden_layers, sliding_window = 1234, 6, 1024
     head_dim = embed_dim // num_attn_heads
     nnm_backbone = Qwen2Backbone(
-        vocab_size=vocab_size, embed_dim=embed_dim, max_seq_len=max_seq_len, padding_idx=0, rms_norm_eps=eps,
-        num_attn_heads=num_attn_heads, num_kv_heads=num_kv_heads, rope_base=base, intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers, sliding_window=sliding_window,
+        vocab_size=vocab_size,
+        embed_dim=embed_dim,
+        max_seq_len=max_seq_len,
+        padding_idx=0,
+        rms_norm_eps=eps,
+        num_attn_heads=num_attn_heads,
+        num_kv_heads=num_kv_heads,
+        rope_base=base,
+        intermediate_size=intermediate_size,
+        num_hidden_layers=num_hidden_layers,
+        sliding_window=sliding_window,
     )
     config = cfg.Qwen2Config(
-        hidden_size=embed_dim, intermediate_size=intermediate_size, hidden_act="silu",
-        num_attention_heads=num_attn_heads, num_key_value_heads=num_kv_heads, sliding_window=sliding_window,
-        rms_norm_eps=eps, head_dim=head_dim, rope_theta=base, max_position_embeddings=max_seq_len,
-        vocab_size=vocab_size, use_cache=False, num_hidden_layers=num_hidden_layers,
+        hidden_size=embed_dim,
+        intermediate_size=intermediate_size,
+        hidden_act="silu",
+        num_attention_heads=num_attn_heads,
+        num_key_value_heads=num_kv_heads,
+        sliding_window=sliding_window,
+        rms_norm_eps=eps,
+        head_dim=head_dim,
+        rope_theta=base,
+        max_position_embeddings=max_seq_len,
+        vocab_size=vocab_size,
+        use_cache=False,
+        num_hidden_layers=num_hidden_layers,
     )
     config._attn_implementation = "sdpa"
     hf_backbone = qwen2.Qwen2Model(config)
@@ -230,21 +280,23 @@ def test_qwen2_backbone(
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 
 
-
 @parametrize("use_cache", [False, True])
-@parametrize("prompts", [
-    ["Hello, how are you?", " What about Python?"],
-    ["Hello", " Tell me more."],
-    ["What is the capital of France?", " What about Germany?"],
-])
+@parametrize(
+    "prompts",
+    [
+        ["Hello, how are you?", " What about Python?"],
+        ["Hello", " Tell me more."],
+        ["What is the capital of France?", " What about Germany?"],
+    ],
+)
 @torch.no_grad()
-def test_qwen2_pretrained(model_path, prompts, use_cache):
+def test_qwen2_pretrained(model_path, source_repo, prompts, use_cache):
     assert model_path is not None
 
     nnm_model = Qwen2LM.from_pretrained(model_path)
     nnm_model.eval()
 
-    weight_repo = getattr(nnm_model.config, '_nnm_weight_repo', model_path)
+    weight_repo = source_repo(model_path)
     weight_repo = os.path.expanduser(weight_repo)
 
     hf_model = AutoModelForCausalLM.from_pretrained(
@@ -290,11 +342,11 @@ def test_qwen2_pretrained(model_path, prompts, use_cache):
             hf_out = hf_model_gen(input_ids, past_key_values=hf_past_key_values, use_cache=True)
             hf_past_key_values = hf_out.past_key_values
             hf_logits = hf_out.logits
-            logits = nnm_model(input_ids)
+            nnm_model(input_ids)
         else:
             hf_out = hf_model_gen(hf_input_ids, use_cache=False)
             hf_logits = hf_out.logits
-            logits = nnm_model(nnm_input_ids)
+            nnm_model(nnm_input_ids)
 
         next_token = hf_logits[:, -1, :].argmax(dim=-1, keepdim=True)
         hf_input_ids = torch.cat([hf_input_ids, next_token], dim=1)
@@ -305,11 +357,11 @@ def test_qwen2_pretrained(model_path, prompts, use_cache):
                 hf_out = hf_model_gen(hf_input_ids[:, -1:], past_key_values=hf_past_key_values, use_cache=True)
                 hf_past_key_values = hf_out.past_key_values
                 hf_logits = hf_out.logits
-                logits = nnm_model(nnm_input_ids[:, -1:])
+                nnm_model(nnm_input_ids[:, -1:])
             else:
                 hf_out = hf_model_gen(hf_input_ids, use_cache=False)
                 hf_logits = hf_out.logits
-                logits = nnm_model(nnm_input_ids)
+                nnm_model(nnm_input_ids)
 
             next_token = hf_logits[:, -1, :].argmax(dim=-1, keepdim=True)
             hf_input_ids = torch.cat([hf_input_ids, next_token], dim=1)

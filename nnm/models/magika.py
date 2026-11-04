@@ -16,13 +16,13 @@ class Magika(PretrainedModel):
 
         self.embedding = nn.Embedding(config.vocab_size, self.token_dim)
         self.embed_bias = nn.Parameter(torch.zeros(self.token_dim))
-        self.activation_0 = nn.GELU(approximate='tanh')
+        self.activation_0 = nn.GELU(approximate="tanh")
         self.layer_norm_0 = nn.LayerNorm(self.hidden_dim, eps=1e-6)
         self.conv_0 = nn.Conv1d(self.token_dim * self.expand_scale, self.hidden_dim, kernel_size=self.conv_kernel, padding=0)
-        self.activation_1 = nn.GELU(approximate='tanh')
+        self.activation_1 = nn.GELU(approximate="tanh")
         self.layer_norm_1 = nn.LayerNorm(self.hidden_dim, eps=1e-6)
         self.dense_1 = nn.Linear(self.hidden_dim, self.num_classes)
-        self.whitespace = torch.tensor([ord(c) for c in '\t\n\r '])
+        self.whitespace = torch.tensor([ord(c) for c in "\t\n\r "])
 
     @property
     def labels(self):
@@ -40,22 +40,22 @@ class Magika(PretrainedModel):
         non_ws = torch.where(mask)[0]
         mask_any = mask.any()
 
-        beg = self._trim_segment(x, non_ws, mask_any, beg_size, pad_token, 'left')
-        end = self._trim_segment(x, non_ws, mask_any, end_size, pad_token, 'right')
+        beg = self._trim_segment(x, non_ws, mask_any, beg_size, pad_token, "left")
+        end = self._trim_segment(x, non_ws, mask_any, end_size, pad_token, "right")
         return torch.cat([beg, end]).reshape(1, -1)
 
     def _trim_segment(self, x, non_ws, mask_any, size, pad_token, direction):
         if not mask_any:
             result = torch.tensor([], dtype=torch.int64, device=x.device)
-        elif direction == 'left':
-            result = x[non_ws[0]:]
+        elif direction == "left":
+            result = x[non_ws[0] :]
         else:
-            result = x[:non_ws[-1] + 1]
+            result = x[: non_ws[-1] + 1]
         if result.size(0) > size:
-            result = result[:size] if direction == 'left' else result[-size:]
+            result = result[:size] if direction == "left" else result[-size:]
         if result.size(0) < size:
             pad = torch.full((size - result.size(0),), pad_token, dtype=torch.int64, device=x.device)
-            result = torch.cat([result, pad]) if direction == 'left' else torch.cat([pad, result])
+            result = torch.cat([result, pad]) if direction == "left" else torch.cat([pad, result])
         return result
 
     def forward(self, x):

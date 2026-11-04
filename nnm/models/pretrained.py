@@ -1,27 +1,33 @@
 import glob
+import importlib.util
+import json
 import os
-import re
-import subprocess
+from pathlib import Path
 
 import torch
+from conippets.config import Config
 from torch import nn
 
-from conippets.config import Config
-
-_DEFAULT_HF_ROOT = os.path.expanduser('~/.nnm/huggingface')
+MANIFEST_NAME = "nnm_weights.json"
+DEFAULT_PATTERNS = ("model.safetensors", "model-*.safetensors", "*.safetensors")
+PROVIDERS = ("huggingface", "modelscope")
+PROVIDER_ALIASES = {"hf": "huggingface", "ms": "modelscope"}
 
 
 class PretrainedModel(nn.Module):
     weight_pattern = None
+    module_name = None
 
     @classmethod
     def from_pretrained(cls, pretrained_path, **kwargs):
-        download_root = kwargs.pop('download_root', None)
-        directory = cls._resolve_pretrained_path(pretrained_path, download_root)
-
-        config = cls.load_config(directory)
+        cache_dir = kwargs.pop("download_root", None)
+        directory = cls._resolve_pretrained_path(pretrained_path, cache_dir)
+        manifest = cls._load_manifest(directory)
+        entry = cls._resolve_entry(manifest, kwargs)
+        config = cls.load_config(directory, entry)
         model = cls(config, **kwargs)
-        model._load_weights(cls._weight_paths(directory, config, download_root))
+        state_dict = cls._load_state_dict(directory, config, entry, cache_dir)
+        model.load_state_dict(state_dict, strict=True)
         model._post_load(directory)
         return model
 
@@ -29,94 +35,134 @@ class PretrainedModel(nn.Module):
         pass
 
     @classmethod
-    def load_config(cls, directory):
-        config_path = os.path.join(directory, 'config.json')
+    def load_config(cls, directory, manifest=None):
+        relative = manifest.get("config", "config.json") if manifest else "config.json"
+        config_path = os.path.join(directory, relative)
         if not os.path.exists(config_path):
-            raise FileNotFoundError(f'Config file not found: {config_path}')
+            raise FileNotFoundError(f"Config file not found: {config_path}")
         return Config.from_json(config_path)
 
     @classmethod
-    def _resolve_pretrained_path(cls, pretrained_path, download_root=None):
-        if os.path.exists(pretrained_path) or os.path.isabs(pretrained_path):
-            return pretrained_path
-
-        if download_root is None:
-            download_root = os.environ.get('NNM_HF_ROOT') or _DEFAULT_HF_ROOT
-
-        parts = pretrained_path.split('/')
-        repo_id = '/'.join(parts[:2])
-        local_path = os.path.join(download_root, repo_id)
-        if not os.path.exists(local_path):
-            cls._download_from_hf(repo_id, local_path)
-        return os.path.join(local_path, *parts[2:])
+    def _load_manifest(cls, directory):
+        path = os.path.join(directory, MANIFEST_NAME)
+        if not os.path.exists(path):
+            return None
+        manifest = json.loads(Path(path).read_text())
+        if manifest.get("version") != 1:
+            raise ValueError(f"Unsupported {MANIFEST_NAME} version: {manifest.get('version')!r}")
+        return manifest
 
     @classmethod
-    def _weight_paths(cls, directory, config, download_root=None):
-        pattern = getattr(config, 'weight_pattern', cls.weight_pattern)
-        if not pattern or not isinstance(pattern, str):
-            raise KeyError(f"'weight_pattern' must be a string in config.json, got {pattern!r}")
+    def manifest_key(cls, **kwargs):
+        return cls.module_name
 
-        paths = sorted(glob.glob(os.path.join(directory, pattern)))
-        if paths:
-            return paths
+    @classmethod
+    def _resolve_entry(cls, manifest, kwargs):
+        if manifest is None or cls.module_name is None:
+            return manifest
+        modules = manifest.get("modules", {})
+        key = cls.manifest_key(**kwargs)
+        if key not in modules:
+            raise KeyError(f"{MANIFEST_NAME} has no module {key!r}")
+        return {**manifest, **modules[key]}
 
-        repo = getattr(config, '_nnm_weight_repo', None)
-        if not repo:
-            raise FileNotFoundError(f'No weight files matching "{pattern}" in {directory}')
+    @classmethod
+    def _resolve_pretrained_path(cls, pretrained_path, cache_dir=None):
+        path = os.path.expanduser(str(pretrained_path))
+        if os.path.exists(path):
+            return path
+        if os.path.isabs(path):
+            raise FileNotFoundError(f"Model directory not found: {path}")
 
-        repo_directory = cls._resolve_pretrained_path(repo, download_root)
-        paths = sorted(glob.glob(os.path.join(repo_directory, pattern)))
+        provider, repo, subdirectory = cls._split_repo(pretrained_path)
+        snapshot = cls._download(repo, provider, cache_dir=cache_dir)
+        return os.path.join(snapshot, subdirectory) if subdirectory else snapshot
+
+    @classmethod
+    def _split_repo(cls, repo_id):
+        value = str(repo_id)
+        provider = "huggingface"
+        if ":" in value:
+            prefix, value = value.split(":", 1)
+            provider = PROVIDER_ALIASES.get(prefix, prefix)
+        if provider not in PROVIDERS:
+            raise ValueError(f"Unsupported provider {provider!r}; expected one of {PROVIDERS}")
+
+        parts = value.split("/")
+        if len(parts) < 2:
+            raise ValueError(f"Invalid repo id {repo_id!r}; expected owner/name")
+        repo = "/".join(parts[:2])
+        subdirectory = os.path.join(*parts[2:]) if len(parts) > 2 else None
+        return provider, repo, subdirectory
+
+    @classmethod
+    def _download(cls, repo, provider, cache_dir=None, pattern=None):
+        kwargs = {"repo_id": repo} if provider == "huggingface" else {"model_id": repo}
+        if cache_dir is not None:
+            kwargs["cache_dir"] = cache_dir
+        if pattern:
+            kwargs["allow_patterns"] = [pattern]
+
+        if provider == "huggingface":
+            from huggingface_hub import snapshot_download  # noqa: PLC0415
+        else:
+            from modelscope import snapshot_download  # noqa: PLC0415
+        return snapshot_download(**kwargs)
+
+    @classmethod
+    def _load_state_dict(cls, directory, config, manifest, cache_dir=None):
+        paths = []
+        mapping = None
+        if manifest:
+            for source in manifest.get("sources", []):
+                provider = source.get("provider", "huggingface")
+                pattern = source.get("pattern")
+                snapshot = cls._download(source["repo"], provider, cache_dir=cache_dir, pattern=pattern)
+                paths.extend(cls._matching_paths(snapshot, pattern))
+            paths.extend(os.path.join(directory, name) for name in manifest.get("weights", []))
+            mapping = manifest.get("mapping")
+        else:
+            pattern = getattr(config, "weight_pattern", cls.weight_pattern)
+            paths = cls._matching_paths(directory, pattern) if pattern else cls._auto_paths(directory)
+
         if not paths:
-            raise FileNotFoundError(f'No weight files matching "{pattern}" in weight repo: {repo}')
-        return paths
-
-    @classmethod
-    def _download_from_hf(cls, repo_id, local_path):
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        try:
-            subprocess.run(['hf', 'download', repo_id, '--local-dir', local_path], check=True)
-        except FileNotFoundError:
-            raise RuntimeError('hf command not found. Please install hf CLI first (e.g., pip install huggingface-hub)')
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f'Failed to download {repo_id}: hf command exited with code {e.returncode}') from e
-
-    def _load_weights(self, paths, weights_only=True):
-        if isinstance(paths, str):
-            paths = [paths]
+            raise FileNotFoundError(f"No weight files found for {directory}")
 
         state_dict = {}
         for path in paths:
-            if path.endswith('.safetensors'):
-                from safetensors.torch import load_file
+            state_dict.update(cls._read_file(path))
 
-                sd = load_file(path)
-            else:
-                checkpoint = torch.load(path, map_location='cpu', weights_only=weights_only)
-                sd = checkpoint.get('state_dict', checkpoint)
-            state_dict.update(sd)
+        if mapping:
+            state_dict = cls._apply_mapping(state_dict, directory, mapping, config)
+        return state_dict
 
-        drop = getattr(self.config, '_nnm_drop', None)
-        if drop:
-            state_dict = {key: tensor for key, tensor in state_dict.items() if not any(re.search(p, key) for p in drop)}
+    @classmethod
+    def _matching_paths(cls, directory, pattern):
+        if not pattern:
+            return cls._auto_paths(directory)
+        return sorted(glob.glob(os.path.join(directory, pattern)))
 
-        transpose = getattr(self.config, '_nnm_transpose', None)
-        if transpose:
-            state_dict = {
-                key: tensor.T.contiguous() if any(re.search(p, key) for p in transpose) else tensor
-                for key, tensor in state_dict.items()
-            }
+    @classmethod
+    def _auto_paths(cls, directory):
+        for pattern in DEFAULT_PATTERNS:
+            paths = sorted(glob.glob(os.path.join(directory, pattern)))
+            if paths:
+                return paths
+        return []
 
-        key_mapping = getattr(self.config, '_nnm_key_mapping', None)
-        if key_mapping:
-            state_dict = self._apply_key_mapping(state_dict, key_mapping)
+    @classmethod
+    def _read_file(cls, path):
+        if path.endswith(".safetensors"):
+            from safetensors.torch import load_file  # noqa: PLC0415
 
-        self.load_state_dict(state_dict, strict=True)
+            return load_file(path)
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        return checkpoint.get("state_dict", checkpoint)
 
-    def _apply_key_mapping(self, state_dict, key_mapping):
-        mapped = {}
-        for key, tensor in state_dict.items():
-            new_key = key
-            for pattern, replacement in key_mapping:
-                new_key = re.sub(pattern, replacement, new_key)
-            mapped[new_key] = tensor
-        return mapped
+    @classmethod
+    def _apply_mapping(cls, state_dict, directory, mapping, config):
+        path = os.path.join(directory, mapping)
+        spec = importlib.util.spec_from_file_location("nnm_weight_mapping", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.map_state_dict(state_dict, config)

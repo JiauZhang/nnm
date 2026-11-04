@@ -1,5 +1,7 @@
-import torch, pytest
+import torch
+import pytest
 from nnm.layers.rwkv import TimeMix
+
 
 # https://github.com/huggingface/transformers/blob/27a25bee4fcb865e8799ba026f1ea4455f2cca98/src/transformers/models/rwkv/modeling_rwkv.py#L189
 def hf_rwkv_linear_attention_cpu(time_decay, time_first, key, value, state=None, return_state=False):
@@ -40,7 +42,8 @@ def hf_rwkv_linear_attention_cpu(time_decay, time_first, key, value, state=None,
 
     return output, state
 
-@pytest.mark.parametrize('batch, seq_len, embed_dim', [(1, 64, 16), (4, 256, 128)])
+
+@pytest.mark.parametrize("batch, seq_len, embed_dim", [(1, 64, 16), (4, 256, 128)])
 def test_rwkv_time_mix(batch, seq_len, embed_dim):
     tm = TimeMix(256)
     w = torch.randn(1, 1, embed_dim)
