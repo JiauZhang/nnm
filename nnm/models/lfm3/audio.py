@@ -58,7 +58,6 @@ class AudioEncoderTrunk(nn.Module):
                 Lfm2DecoderLayer(
                     config=config,
                     layer_idx=index,
-                    position_encoder=self.position_encoder,
                     is_attention_layer=kind == "full_attention",
                     head_dim=head_dim,
                 )
@@ -70,9 +69,15 @@ class AudioEncoderTrunk(nn.Module):
     def forward(self, inputs_embeds, sliding_window):
         seq_len = inputs_embeds.shape[1]
         mask = make_causal_mask(seq_len, seq_len, 0, inputs_embeds.device, inputs_embeds.dtype, sliding_window=sliding_window)
+        positions = torch.arange(seq_len, device=inputs_embeds.device)
+        rotary_embeddings = self.position_encoder(positions)
         hidden = inputs_embeds
         for kind, layer in zip(self.layer_types, self.layers):
-            hidden = layer(hidden, attn_mask=mask if kind == "full_attention" else None)
+            hidden = layer(
+                hidden,
+                rotary_embeddings=rotary_embeddings,
+                attn_mask=mask if kind == "full_attention" else None,
+            )
         return self.embedding_norm(hidden)
 
 

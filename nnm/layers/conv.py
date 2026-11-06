@@ -2,6 +2,72 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nnm.layers.norm import LayerNorm2d
+
+
+class CXBlock(nn.Module):
+    def __init__(self, dim, kernel_size=7, padding=3, layer_scale_init_value=1e-6, use_dwconv=True):
+        super().__init__()
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size, padding=padding, groups=dim if use_dwconv else 1)
+        self.norm = LayerNorm2d(dim, eps=1e-6)
+        self.pwconv1 = nn.Linear(dim, 4 * dim)
+        self.act = nn.GELU()
+        self.pwconv2 = nn.Linear(4 * dim, dim)
+        self.gamma = nn.Parameter(layer_scale_init_value * torch.ones(dim)) if layer_scale_init_value > 0 else None
+
+    def forward(self, hidden):
+        residual = hidden
+        hidden = self.dwconv(hidden)
+        hidden = self.norm(hidden).permute(0, 2, 3, 1)
+        hidden = self.pwconv2(self.act(self.pwconv1(hidden)))
+        if self.gamma is not None:
+            hidden = hidden * self.gamma
+        return residual + hidden.permute(0, 3, 1, 2)
+
+
+class ConvNormAct(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, groups=1, act=True):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, kernel_size // 2, groups=groups, bias=False)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.act = nn.GELU() if act else nn.Identity()
+
+    def forward(self, hidden):
+        return self.act(self.bn(self.conv(hidden)))
+
+
+class ConvFFN(nn.Module):
+    def __init__(self, channels, hidden_channels, dropout=0.0, norm=True):
+        super().__init__()
+        self.conv = (
+            ConvNormAct(channels, channels, 7, groups=channels, act=False)
+            if norm
+            else nn.Sequential(nn.Conv2d(channels, channels, 7, padding=3, groups=channels, bias=False))
+        )
+        self.fc1 = nn.Conv2d(channels, hidden_channels, 1)
+        self.act = nn.GELU()
+        self.fc2 = nn.Conv2d(hidden_channels, channels, 1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, hidden):
+        hidden = self.dropout(self.act(self.fc1(self.conv(hidden))))
+        return self.dropout(self.fc2(hidden))
+
+
+class ResBlock2D(nn.Module):
+    def __init__(self, channels, norm_eps=1e-6):
+        super().__init__()
+        self.norm1 = LayerNorm2d(channels, eps=norm_eps)
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.norm2 = LayerNorm2d(channels, eps=norm_eps)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+
+    def forward(self, x):
+        hidden = F.silu(self.norm1(x))
+        hidden = self.conv1(hidden)
+        hidden = F.silu(self.norm2(hidden))
+        return x + self.conv2(hidden)
+
 
 class ShortConv(nn.Module):
     def __init__(self, hidden_size, kernel_size, bias=False, use_cache=False):

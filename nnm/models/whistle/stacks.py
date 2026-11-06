@@ -4,10 +4,9 @@ import torch
 from torch import nn
 
 from nnm.layers.norm import ZCRMSNorm, rms_unit
-from nnm.layers.position import sinusoidal_embedding
+from nnm.layers.sinusoidal import sinusoidal_embedding
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.transformer import CrossAttention, SelfAttention
-from .layers import ConvSelfAttention, Engram, HadamardMLP, MHCStack
+from .layers import ConvSelfAttention, Engram, HadamardMLP, MHCStack, WhistleCrossAttention, WhistleSelfAttention
 
 
 class ConvolutionBlock(nn.Module):
@@ -29,18 +28,16 @@ class EncoderBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.norm = ZCRMSNorm(config.d_model)
-        self.attn = SelfAttention(
+        self.rotary = RoPE(rotary_inv_freq(config.qk_head_dim, config.rope_theta))
+        self.attn = WhistleSelfAttention(
             config.d_model,
             config.num_heads,
             config.num_kv_heads,
             config.qk_head_dim,
             config.v_head_dim,
-            q_norm=True,
-            k_norm=True,
-            norm_factory=ZCRMSNorm,
-            output_gate="element",
+            qk_norm=True,
+            norm_layer=ZCRMSNorm,
             causal=False,
-            rope=RoPE(rotary_inv_freq(config.qk_head_dim, config.rope_theta)),
         )
         self.post_attn_norm = ZCRMSNorm(config.d_model)
         self.attn_gate = nn.Parameter(torch.zeros(()))
@@ -53,8 +50,10 @@ class EncoderBlock(nn.Module):
         self.mlp0 = HadamardMLP(config.d_model, config.hada_n)
 
     def forward(self, x):
+        positions = torch.arange(x.shape[1], device=x.device)
+        rotary_embeddings = self.rotary(positions)
         x = x + 0.5 * self.mlp0(self.pre_hada_norm_0(x))
-        attn = self.post_attn_norm(self.attn(self.norm(x)))
+        attn = self.post_attn_norm(self.attn(self.norm(x), rotary_embeddings=rotary_embeddings))
         x = x + torch.sigmoid(self.attn_gate) * attn
         conv = torch.nn.functional.silu(self.conv_out_norm(self.conv(self.conv_norm(x))))
         x = x + self.conv.pw2(conv)
@@ -65,6 +64,7 @@ class DecoderBlock(nn.Module):
     def __init__(self, config, cross_attention):
         super().__init__()
         self.norm = ZCRMSNorm(config.d_model)
+        self.rotary = RoPE(rotary_inv_freq(config.qk_head_dim, config.rope_theta))
         self.self_attn = ConvSelfAttention(
             config.d_model,
             config.num_heads,
@@ -72,26 +72,21 @@ class DecoderBlock(nn.Module):
             config.qk_head_dim,
             config.v_head_dim,
             config.qkv_conv_taps,
-            q_norm=True,
-            k_norm=True,
-            norm_factory=ZCRMSNorm,
-            output_gate="element",
-            rope=RoPE(rotary_inv_freq(config.qk_head_dim, config.rope_theta)),
+            qk_norm=True,
+            norm_layer=ZCRMSNorm,
         )
         self.post_attn_norm = ZCRMSNorm(config.d_model)
         self.attn_gate = nn.Parameter(torch.zeros(()))
         self.cross_attention = cross_attention
         if cross_attention:
             self.cross_norm = ZCRMSNorm(config.d_model)
-            self.cross = CrossAttention(
+            self.cross = WhistleCrossAttention(
                 config.d_model,
                 config.num_heads,
                 config.qk_head_dim,
                 config.v_head_dim,
-                q_norm=True,
-                k_norm=True,
-                norm_factory=ZCRMSNorm,
-                output_gate="element",
+                qk_norm=True,
+                norm_layer=ZCRMSNorm,
                 return_attention=True,
             )
             self.post_cross_norm = ZCRMSNorm(config.d_model)
@@ -100,8 +95,10 @@ class DecoderBlock(nn.Module):
         self.mlp = HadamardMLP(config.d_model, config.hada_n)
 
     def forward(self, x, mask, memory=None):
+        positions = torch.arange(x.shape[1], device=x.device)
+        rotary_embeddings = self.rotary(positions)
         skip = x
-        attn = self.post_attn_norm(self.self_attn(self.norm(x), attn_mask=mask))
+        attn = self.post_attn_norm(self.self_attn(self.norm(x), rotary_embeddings=rotary_embeddings, attn_mask=mask))
         x = skip + torch.sigmoid(self.attn_gate) * attn
         if self.cross_attention and memory is not None:
             cross = self.post_cross_norm(self.cross(self.cross_norm(x), memory))

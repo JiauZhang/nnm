@@ -3,8 +3,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nnm.layers.attention import CrossAttention, RotarySelfAttention
 from nnm.layers.norm import rms_unit
-from nnm.layers.transformer import SelfAttention
 
 HADA_PERM_SEEDS = (11, 13)
 HADA_COND_RANK = 8
@@ -118,7 +118,22 @@ class MHCStack(nn.Module):
         return torch.einsum("btij,btjc->btic", h_res, stream) + h_post[..., None] * delta[:, :, None, :]
 
 
-class ConvSelfAttention(SelfAttention):
+class WhistleSelfAttention(RotarySelfAttention):
+    def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim, v_head_dim, **kwargs):
+        super().__init__(hidden_size, num_heads, num_kv_heads, head_dim, v_head_dim, **kwargs)
+        self.gate_proj = nn.Linear(hidden_size, num_heads * v_head_dim, bias=False)
+
+    def forward(self, x, rotary_embeddings=None, attn_mask=None, cache=None):
+        output = self.forward_heads(
+            x,
+            rotary_embeddings=rotary_embeddings,
+            attn_mask=attn_mask,
+            cache=cache,
+        )
+        return self.o_proj(output * torch.sigmoid(self.gate_proj(x)))
+
+
+class ConvSelfAttention(WhistleSelfAttention):
     def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim, v_head_dim, qkv_conv, **kwargs):
         super().__init__(hidden_size, num_heads, num_kv_heads, head_dim, v_head_dim, **kwargs)
         self.q_conv = nn.Conv1d(num_heads * head_dim, num_heads * head_dim, qkv_conv, groups=num_heads * head_dim, bias=False)
@@ -129,9 +144,19 @@ class ConvSelfAttention(SelfAttention):
             num_kv_heads * v_head_dim, num_kv_heads * v_head_dim, qkv_conv, groups=num_kv_heads * v_head_dim, bias=False
         )
 
-    def project(self, x):
-        query, key, value = super().project(x)
+    def project(self, x, query_pos=None, key_pos=None):
+        query, key, value = super().project(x, query_pos, key_pos)
         return _apply_conv(query, self.q_conv), _apply_conv(key, self.k_conv), _apply_conv(value, self.v_conv)
+
+
+class WhistleCrossAttention(CrossAttention):
+    def __init__(self, hidden_size, num_heads, head_dim, v_head_dim, **kwargs):
+        super().__init__(hidden_size, num_heads, head_dim, v_head_dim, **kwargs)
+        self.gate_proj = nn.Linear(hidden_size, num_heads * v_head_dim, bias=False)
+
+    def forward(self, x, memory, attn_mask=None):
+        output = self.forward_heads(x, memory, attn_mask=attn_mask)
+        return self.o_proj(output * torch.sigmoid(self.gate_proj(x)))
 
 
 def _apply_conv(x, conv):

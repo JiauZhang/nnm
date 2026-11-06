@@ -1,33 +1,42 @@
 import torch
+from functools import partial
 from torch import nn
 
 from nnm.cache import KVCache, StateCache
+from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.conv import ShortConv
-from nnm.layers.mlp import SwiGLU
+from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.transformer import SelfAttention
 from nnm.models.pretrained import PretrainedModel
 
 
-class Attention(SelfAttention):
+class Attention(RotarySelfAttention):
     def __init__(self, config, layer_idx):
         super().__init__(
             config.hidden_size,
             config.num_attention_heads,
             config.num_key_value_heads,
             config.head_dim,
-            q_norm=True,
-            k_norm=True,
-            norm_eps=config.norm_eps,
-            output_gate="head",
+            qk_norm=True,
+            norm_layer=partial(RMSNorm, eps=config.norm_eps),
             sliding_window=config.sliding_window if config.layer_types[layer_idx] == "sliding_attention" else None,
         )
+        self.gate_proj = nn.Linear(config.hidden_size, config.num_attention_heads, bias=False)
         self.use_cache = getattr(config, "use_cache", False)
 
-    def forward(self, x, cos, sin, cache=None, attn_mask=None):
+    def forward(self, x, rotary_embeddings=None, cache=None, attn_mask=None):
+        batch, seq_len = x.shape[:2]
         cache = cache if self.use_cache else None
-        return super().forward(x, cos, sin, cache, attn_mask)
+        output = self.forward_heads(
+            x,
+            rotary_embeddings=rotary_embeddings,
+            cache=cache,
+            attn_mask=attn_mask,
+        )
+        gate = torch.sigmoid(self.gate_proj(x))
+        output = (output.view(batch, seq_len, self.num_heads, self.v_head_dim) * gate.unsqueeze(-1)).reshape(batch, seq_len, -1)
+        return self.o_proj(output)
 
 
 class DecoderLayer(nn.Module):
@@ -41,7 +50,7 @@ class DecoderLayer(nn.Module):
             self.conv = ShortConv(
                 config.hidden_size, config.conv_L_cache, config.conv_bias, getattr(config, "use_cache", False)
             )
-        self.feed_forward = SwiGLU(config.hidden_size, config.intermediate_size)
+        self.feed_forward = GatedMLP(config.hidden_size, config.intermediate_size)
         self.operator_norm = RMSNorm(config.hidden_size, config.norm_eps)
         self.ffn_norm = RMSNorm(config.hidden_size, config.norm_eps)
         if self.sandwich:
@@ -52,7 +61,9 @@ class DecoderLayer(nn.Module):
         residual = x
         hidden = self.operator_norm(x)
         hidden = (
-            self.self_attn(hidden, cos, sin, cache, attn_mask) if self.is_attention else self.conv(hidden, cache, attn_mask)
+            self.self_attn(hidden, rotary_embeddings=(cos, sin), cache=cache, attn_mask=attn_mask)
+            if self.is_attention
+            else self.conv(hidden, cache, attn_mask)
         )
         if self.sandwich:
             hidden = self.post_operator_norm(hidden)

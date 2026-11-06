@@ -1,32 +1,33 @@
 import torch
+from functools import partial
 from torch import nn
 
 from nnm.cache import KVCache
-from nnm.layers.mlp import GateMLP
+from nnm.layers.attention import RotarySelfAttention
+from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.transformer import SelfAttention, TransformerBlock
+from nnm.layers.transformer import TransformerBlock
 from nnm.models.pretrained import PretrainedModel
 
 
 def _make_layer(config):
     head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-    attention = SelfAttention(
+    attention = RotarySelfAttention(
         config.hidden_size,
         config.num_attention_heads,
         config.num_key_value_heads,
         head_dim,
         qkv_bias=config.attention_bias,
         o_bias=config.attention_bias,
-        q_norm=True,
-        k_norm=True,
-        norm_eps=config.rms_norm_eps,
+        qk_norm=True,
+        norm_layer=partial(RMSNorm, eps=config.rms_norm_eps),
     )
     return TransformerBlock(
         config.hidden_size,
-        config.rms_norm_eps,
         attention,
-        GateMLP(config.hidden_size, config.intermediate_size),
+        GatedMLP(config.hidden_size, config.intermediate_size),
+        norm_layer=partial(RMSNorm, eps=config.rms_norm_eps),
     )
 
 
@@ -60,7 +61,12 @@ class TalkerModel(nn.Module):
         cos, sin = self.rotary_emb(positions)
         hidden = inputs_embeds
         for index, layer in enumerate(self.layers):
-            hidden = layer(hidden, cos=cos, sin=sin, cache=self.caches[index] if use_cache else None, attn_mask=attn_mask)
+            hidden = layer(
+                hidden,
+                rotary_embeddings=(cos, sin),
+                cache=self.caches[index] if use_cache else None,
+                attn_mask=attn_mask,
+            )
         if use_cache:
             self.position_offset += seq_len
         return self.norm(hidden)
@@ -108,7 +114,11 @@ class CodePredictorModel(nn.Module):
         cos, sin = self.rotary_emb(positions)
         hidden = inputs_embeds
         for index, layer in enumerate(self.layers):
-            hidden = layer(hidden, cos=cos, sin=sin, cache=self.caches[index] if use_cache else None)
+            hidden = layer(
+                hidden,
+                rotary_embeddings=(cos, sin),
+                cache=self.caches[index] if use_cache else None,
+            )
         if use_cache:
             self.position_offset += seq_len
         return self.norm(hidden)

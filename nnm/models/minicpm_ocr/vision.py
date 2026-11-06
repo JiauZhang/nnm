@@ -1,9 +1,11 @@
 import torch
 import torch.nn.functional as F
+from functools import partial
 from torch import nn
 
-from nnm.backends.sdpa import scaled_dot_product_attention
-from nnm.layers.transformer import MLP, VisionBlock
+from nnm.layers.attention import SelfAttention
+from nnm.layers.mlp import MLP
+from nnm.layers.transformer import VisionBlock
 
 
 def vision_cu_seqlens(target_sizes):
@@ -45,48 +47,18 @@ def vision_window_index(target_sizes, window_side):
     return window_index, torch.unique_consecutive(cu_seqlens)
 
 
-class VisionAttention(nn.Module):
-    def __init__(self, *, hidden_size, num_attention_heads):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.num_attention_heads = num_attention_heads
-        self.head_dim = hidden_size // num_attention_heads
-        self.scaling = self.head_dim**-0.5
-        self.q_proj = nn.Linear(hidden_size, hidden_size)
-        self.k_proj = nn.Linear(hidden_size, hidden_size)
-        self.v_proj = nn.Linear(hidden_size, hidden_size)
-        self.out_proj = nn.Linear(hidden_size, hidden_size)
-
-    def forward(self, x, cu_seqlens=None):
-        batch, seq_len = x.shape[:-1]
-        shape = (batch, seq_len, self.num_attention_heads, self.head_dim)
-        query = self.q_proj(x).view(shape).transpose(1, 2)
-        key = self.k_proj(x).view(shape).transpose(1, 2)
-        value = self.v_proj(x).view(shape).transpose(1, 2)
-
-        if cu_seqlens is None:
-            output = scaled_dot_product_attention(query, key, value, is_causal=False, scale=self.scaling)
-        else:
-            lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
-            splits = [torch.split(tensor, lengths, dim=2) for tensor in (query, key, value)]
-            output = torch.cat(
-                [scaled_dot_product_attention(q, k, v, is_causal=False, scale=self.scaling) for q, k, v in zip(*splits)],
-                dim=2,
-            )
-
-        output = output.transpose(1, 2).reshape(batch, seq_len, self.hidden_size)
-        return self.out_proj(output)
-
-
 class VisionLayer(VisionBlock):
     def __init__(self, *, hidden_size, intermediate_size, num_attention_heads, layer_norm_eps):
         super().__init__(
             hidden_size,
-            layer_norm_eps,
-            VisionAttention(hidden_size=hidden_size, num_attention_heads=num_attention_heads),
+            SelfAttention(hidden_size, num_attention_heads, qkv_bias=True, o_bias=True, causal=False),
             MLP(hidden_size, intermediate_size, "gelu_pytorch_tanh", bias=True),
-            norm_factory=lambda dim: nn.LayerNorm(dim, eps=layer_norm_eps),
+            norm_layer=partial(nn.LayerNorm, eps=layer_norm_eps),
         )
+
+    def forward(self, x, cu_seqlens=None):
+        lengths = None if cu_seqlens is None else (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        return super().forward(x, lengths=lengths)
 
 
 class VisionWindowMerger(nn.Module):
@@ -96,7 +68,7 @@ class VisionWindowMerger(nn.Module):
         self.hidden_size = hidden_size
         self.window_hidden_size = hidden_size * self.window_kernel_size[0] * self.window_kernel_size[1]
         self.window_intermediate_size = intermediate_size * self.window_kernel_size[0] * self.window_kernel_size[1]
-        self.attn = VisionAttention(hidden_size=hidden_size, num_attention_heads=num_attention_heads)
+        self.attn = SelfAttention(hidden_size, num_attention_heads, qkv_bias=True, o_bias=True, causal=False)
         self.norm_1 = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
         self.norm = nn.LayerNorm(self.window_hidden_size, eps=layer_norm_eps)
         self.linear_1 = nn.Linear(self.window_hidden_size, self.window_intermediate_size)
@@ -108,7 +80,7 @@ class VisionWindowMerger(nn.Module):
         window_index, cu_seqlens = vision_window_index(target_sizes, window_h)
 
         normed = self.norm_1(x)[:, window_index]
-        normed = self.attn(normed, cu_seqlens=cu_seqlens)
+        normed = self.attn(normed, lengths=(cu_seqlens[1:] - cu_seqlens[:-1]).tolist())
         merged = x[:, window_index] + normed
 
         patches = merged.view(-1, window_size, self.hidden_size)

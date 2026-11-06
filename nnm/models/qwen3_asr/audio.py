@@ -1,10 +1,13 @@
 import torch
 import torch.nn.functional as F
+from functools import partial
 from torch import nn
 
 from nnm.layers.activation import get_activation
-from nnm.layers.position import SinusoidalPositionEmbedding
-from nnm.layers.transformer import SelfAttention
+from nnm.layers.attention import SelfAttention
+from nnm.layers.mlp import MLP
+from nnm.layers.sinusoidal import SinusoidalPositionEmbedding
+from nnm.layers.transformer import TransformerBlock
 
 
 def feat_extract_lengths(input_lengths):
@@ -24,27 +27,13 @@ class AudioAttention(SelfAttention):
         return super().forward(hidden_states[None], lengths=lengths)
 
 
-class AudioEncoderLayer(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.embed_dim = config.d_model
-        self.self_attn = AudioAttention(config)
-        self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
-        self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
-        self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
-        self.final_layer_norm = nn.LayerNorm(self.embed_dim)
-
-    def forward(self, hidden_states, cu_seqlens):
-        residual = hidden_states
-        hidden_states = self.self_attn(self.self_attn_layer_norm(hidden_states), cu_seqlens)
-        hidden_states = residual + hidden_states
-        residual = hidden_states
-        hidden_states = self.fc2(F.gelu(self.fc1(self.final_layer_norm(hidden_states))))
-        hidden_states = residual + hidden_states
-        if hidden_states.dtype == torch.float16:
-            clamp_value = torch.finfo(hidden_states.dtype).max - 1000
-            hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
-        return hidden_states
+def audio_encoder_layer(config):
+    return TransformerBlock(
+        config.d_model,
+        AudioAttention(config),
+        MLP(config.d_model, config.encoder_ffn_dim, "gelu", bias=True),
+        norm_layer=partial(nn.LayerNorm, eps=1e-5),
+    )
 
 
 class Qwen3ASRAudioEncoder(nn.Module):
@@ -58,7 +47,7 @@ class Qwen3ASRAudioEncoder(nn.Module):
         self.positional_embedding = SinusoidalPositionEmbedding(
             self.max_source_positions, config.d_model, denominator=config.d_model // 2 - 1
         )
-        self.layers = nn.ModuleList([AudioEncoderLayer(config) for _ in range(config.encoder_layers)])
+        self.layers = nn.ModuleList([audio_encoder_layer(config) for _ in range(config.encoder_layers)])
         self.ln_post = nn.LayerNorm(config.d_model)
         self.conv2d1 = nn.Conv2d(1, config.downsample_hidden_size, 3, 2, padding=1)
         self.conv2d2 = nn.Conv2d(config.downsample_hidden_size, config.downsample_hidden_size, 3, 2, padding=1)
@@ -110,7 +99,10 @@ class Qwen3ASRAudioEncoder(nn.Module):
         cu_seqlens = torch.tensor(cu_chunk_lens, device=feature_lens.device).cumsum(-1, dtype=torch.int32)
 
         for layer in self.layers:
-            hidden_states = layer(hidden_states, cu_seqlens)
+            hidden_states = layer(hidden_states, cu_seqlens=cu_seqlens)
+            if hidden_states.dtype == torch.float16:
+                clamp_value = torch.finfo(hidden_states.dtype).max - 1000
+                hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
         hidden_states = self.proj1(self.ln_post(hidden_states))
         return self.proj2(F.gelu(hidden_states))

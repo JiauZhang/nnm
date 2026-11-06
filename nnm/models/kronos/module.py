@@ -1,69 +1,16 @@
 import math
+from functools import partial
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from nnm.layers.mlp import SwiGLU as FeedForward
+from nnm.layers.attention import RotaryCrossAttention, RotarySelfAttention
+from nnm.layers.mlp import GatedMLP as FeedForward
 from nnm.layers.norm import RMSNorm
-from nnm.layers.position import sinusoidal_embedding
-from nnm.layers.rope import RoPE, apply_rope, rotary_inv_freq
-
-
-class MultiHeadAttentionWithRoPE(nn.Module):
-    def __init__(self, d_model, n_heads):
-        super().__init__()
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
-        self.rotary = RoPE(rotary_inv_freq(self.head_dim, 10000))
-
-    def forward(self, x, key_padding_mask=None):
-        batch, length, _ = x.shape
-        query, key, value = (
-            projection(x).view(batch, length, self.n_heads, self.head_dim).transpose(1, 2)
-            for projection in (self.q_proj, self.k_proj, self.v_proj)
-        )
-        cos, sin = self.rotary(torch.arange(query.shape[-2], device=query.device))
-        query, key = apply_rope(query, cos, sin), apply_rope(key, cos, sin)
-
-        if key_padding_mask is None:
-            out = F.scaled_dot_product_attention(query, key, value, is_causal=True)
-        else:
-            keep = key_padding_mask.bool()[:, None, None, :]
-            causal = torch.ones(length, length, dtype=torch.bool, device=x.device).tril()
-            out = F.scaled_dot_product_attention(query, key, value, attn_mask=keep & causal)
-
-        return self.out_proj(out.transpose(1, 2).reshape(batch, length, -1))
-
-
-class MultiHeadCrossAttentionWithRoPE(nn.Module):
-    def __init__(self, d_model, n_heads):
-        super().__init__()
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
-        self.rotary = RoPE(rotary_inv_freq(self.head_dim, 10000))
-
-    def forward(self, query, key, value, key_padding_mask=None):
-        batch, q_len, _ = query.shape
-        seq_len = key.shape[1]
-
-        query = self.q_proj(query).view(batch, q_len, self.n_heads, self.head_dim).transpose(1, 2)
-        key = self.k_proj(key).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        value = self.v_proj(value).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        cos, sin = self.rotary(torch.arange(query.shape[-2], device=query.device))
-        query, key = apply_rope(query, cos, sin), apply_rope(key, cos, sin)
-
-        attn_mask = None if key_padding_mask is None else key_padding_mask.bool()[:, None, None, :]
-        out = F.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask)
-        return self.out_proj(out.transpose(1, 2).reshape(batch, q_len, -1))
+from nnm.layers.sinusoidal import sinusoidal_embedding
+from nnm.layers.rope import RoPE, rotary_inv_freq
+from nnm.layers.transformer import TransformerBlock as SharedTransformerBlock
 
 
 class HierarchicalEmbedding(nn.Module):
@@ -91,27 +38,37 @@ class HierarchicalEmbedding(nn.Module):
 class DependencyAwareLayer(nn.Module):
     def __init__(self, d_model, n_heads=4):
         super().__init__()
-        self.cross_attn = MultiHeadCrossAttentionWithRoPE(d_model, n_heads)
+        self.cross_attn = RotaryCrossAttention(d_model, n_heads, qkv_bias=True, o_bias=True)
         self.norm = RMSNorm(d_model)
+        self.rotary = RoPE(rotary_inv_freq(d_model // n_heads, 10000))
 
     def forward(self, hidden_states, sibling_embed, key_padding_mask=None):
-        attn_out = self.cross_attn(
-            query=sibling_embed, key=hidden_states, value=hidden_states, key_padding_mask=key_padding_mask
-        )
+        positions = torch.arange(sibling_embed.shape[1], device=sibling_embed.device)
+        rotary_embeddings = self.rotary(positions)
+        attn_mask = None if key_padding_mask is None else key_padding_mask.bool()[:, None, None, :]
+        attn_out = self.cross_attn(sibling_embed, hidden_states, rotary_embeddings, attn_mask=attn_mask)
         return self.norm(hidden_states + attn_out)
 
 
-class TransformerBlock(nn.Module):
+class TransformerBlock(SharedTransformerBlock):
     def __init__(self, d_model, n_heads, ff_dim):
-        super().__init__()
-        self.norm1 = RMSNorm(d_model)
-        self.self_attn = MultiHeadAttentionWithRoPE(d_model, n_heads)
-        self.norm2 = RMSNorm(d_model)
-        self.ffn = FeedForward(d_model, ff_dim)
+        super().__init__(
+            d_model,
+            RotarySelfAttention(d_model, n_heads, qkv_bias=True, o_bias=True, causal=True),
+            FeedForward(d_model, ff_dim),
+            norm_layer=partial(RMSNorm, eps=1e-5),
+        )
+        self.rotary = RoPE(rotary_inv_freq(d_model // n_heads, 10000))
 
     def forward(self, x, key_padding_mask=None):
-        x = x + self.self_attn(self.norm1(x), key_padding_mask=key_padding_mask)
-        return x + self.ffn(self.norm2(x))
+        positions = torch.arange(x.shape[1], device=x.device)
+        rotary_embeddings = self.rotary(positions)
+        if key_padding_mask is None:
+            return super().forward(x, rotary_embeddings=rotary_embeddings)
+        causal = torch.ones(x.shape[1], x.shape[1], dtype=torch.bool, device=x.device).tril()
+        keep = key_padding_mask.bool()[:, None, None, :] & causal
+        attn_mask = torch.where(keep, 0.0, float("-inf"))
+        return super().forward(x, rotary_embeddings=rotary_embeddings, attn_mask=attn_mask)
 
 
 class DualHead(nn.Module):

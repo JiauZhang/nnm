@@ -1,15 +1,17 @@
 import torch
-from torch import nn
+from functools import partial
 from torch.nn import functional as F
 
-from nnm.layers.mlp import GateMLP
+from nnm.layers.attention import SelfAttention
+from nnm.layers.mlp import GatedMLP
 from nnm.layers.moe import MoE
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import apply_rope
-from nnm.models.unlimited_ocr.sparse import BlockRouter, MASK_NEG, SparseIndexer, sparse_keep_mask
+from nnm.layers.transformer import TransformerBlock
+from nnm.models.unlimited_ocr.sparse import BlockRouter, MASK_NEG, sparse_keep_mask
 
 
-class DecoderAttention(nn.Module):
+class DecoderAttention(SelfAttention):
     def __init__(
         self,
         *,
@@ -21,24 +23,10 @@ class DecoderAttention(nn.Module):
         layer_idx,
         sparse,
     ):
-        super().__init__()
-        self.num_heads = num_heads
-        self.num_kv_heads = num_kv_heads
-        self.head_dim = head_dim
-        self.scale = head_dim**-0.5
+        super().__init__(hidden_size, num_heads, num_kv_heads, head_dim=head_dim, qkv_bias=False, o_bias=False, causal=False)
         self.block_size = int(sparse["sparse_block_size"])
         self.local_window = max(1, int(sparse["sparse_local_block"])) * self.block_size
-        self.q_proj = nn.Linear(hidden_size, num_heads * head_dim, bias=False)
-        self.k_proj = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=False)
-        self.v_proj = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=False)
-        self.o_proj = nn.Linear(num_heads * head_dim, hidden_size, bias=False)
         index_dim = int(sparse["sparse_index_dim"])
-        self.indexer = SparseIndexer(
-            hidden_size=hidden_size,
-            index_dim=index_dim,
-            num_index_heads=int(sparse.get("sparse_num_index_heads", 1)),
-            eps=rms_norm_eps,
-        )
         scale_per_layer = sparse.get("dash_scale_per_layer")
         floor_per_layer = sparse.get("dash_floor_per_layer")
         self.dash_router = BlockRouter(
@@ -58,9 +46,10 @@ class DecoderAttention(nn.Module):
 
     def forward(self, x, cos, sin, position_ids, block_candidate, image_blocks, attention_mask=None):
         batch, seq_len, _ = x.shape
-        q = self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        q, k, v = self.project(x)
+        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         q, k = apply_rope(q, cos, sin, dim=1), apply_rope(k, cos, sin, dim=1)
 
         num_key_blocks = (seq_len + self.block_size - 1) // self.block_size
@@ -81,19 +70,16 @@ class DecoderAttention(nn.Module):
         if attention_mask is not None:
             mask = mask + attention_mask
 
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask.to(q.dtype), scale=self.scale, enable_gqa=True)
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask.to(q.dtype), scale=self.scaling, enable_gqa=True)
         out = out.transpose(1, 2).reshape(batch, seq_len, self.num_heads * self.head_dim)
         return self.o_proj(out)
 
 
-class DecoderLayer(nn.Module):
+class DecoderLayer(TransformerBlock):
     def __init__(self, *, config, layer_idx, sparse):
-        super().__init__()
         hidden_size = config.hidden_size
         head_dim = hidden_size // config.num_attention_heads
-        self.input_layernorm = RMSNorm(hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(hidden_size, eps=config.rms_norm_eps)
-        self.self_attn = DecoderAttention(
+        self_attn = DecoderAttention(
             hidden_size=hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
@@ -108,7 +94,7 @@ class DecoderLayer(nn.Module):
             and layer_idx % int(config.get("moe_layer_freq", 1)) == 0
         )
         if use_moe:
-            self.mlp = MoE(
+            mlp = MoE(
                 hidden_size=hidden_size,
                 moe_intermediate_size=config.moe_intermediate_size,
                 n_routed_experts=config.n_routed_experts,
@@ -117,14 +103,16 @@ class DecoderLayer(nn.Module):
                 scoring_func=config.get("scoring_func", "softmax"),
                 norm_topk_prob=bool(config.get("norm_topk_prob", False)),
                 routed_scaling_factor=float(config.get("routed_scaling_factor", 1.0)),
-                act=nn.SiLU,
             )
         else:
-            self.mlp = GateMLP(hidden_size=hidden_size, intermediate_size=config.intermediate_size, act=nn.SiLU)
+            mlp = GatedMLP(hidden_size=hidden_size, intermediate_size=config.intermediate_size)
+        super().__init__(
+            hidden_size,
+            self_attn,
+            mlp,
+            norm_layer=partial(RMSNorm, eps=config.rms_norm_eps),
+        )
 
     def forward(self, x, cos, sin, position_ids, block_candidate, image_blocks, attention_mask=None):
-        residual = x
-        x = self.self_attn(self.input_layernorm(x), cos, sin, position_ids, block_candidate, image_blocks, attention_mask)
-        x = residual + x
-        residual = x
-        return residual + self.mlp(self.post_attention_layernorm(x))
+        x = x + self.self_attn(self.input_layernorm(x), cos, sin, position_ids, block_candidate, image_blocks, attention_mask)
+        return x + self.mlp(self.post_attention_layernorm(x))

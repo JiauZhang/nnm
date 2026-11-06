@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from nnm.layers.mlp import GateMLP
+from nnm.layers.mlp import GatedMLP
 
 
 class MoEGate(nn.Module):
@@ -44,7 +44,7 @@ class MoE(nn.Module):
         scoring_func,
         norm_topk_prob,
         routed_scaling_factor,
-        act=nn.SiLU,
+        activation="silu",
     ):
         super().__init__()
         self.gate = MoEGate(
@@ -55,8 +55,10 @@ class MoE(nn.Module):
             norm_topk_prob=norm_topk_prob,
             routed_scaling_factor=routed_scaling_factor,
         )
-        self.experts = nn.ModuleList([GateMLP(hidden_size, moe_intermediate_size, act=act) for _ in range(n_routed_experts)])
-        self.shared_experts = GateMLP(hidden_size, moe_intermediate_size * n_shared_experts, act=act)
+        self.experts = nn.ModuleList(
+            [GatedMLP(hidden_size, moe_intermediate_size, activation=activation) for _ in range(n_routed_experts)]
+        )
+        self.shared_experts = GatedMLP(hidden_size, moe_intermediate_size * n_shared_experts, activation=activation)
 
     def forward(self, x):
         flat = x.reshape(-1, x.shape[-1])

@@ -7,7 +7,7 @@ from transformers.models.qwen2 import modeling_qwen2 as qwen2
 from transformers.models.qwen2 import configuration_qwen2 as cfg
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.transformer import SelfAttention
+from nnm.layers.attention import RotarySelfAttention
 from nnm.models.qwen2 import (
     Qwen2MLP,
     Qwen2DecoderLayer,
@@ -51,13 +51,12 @@ def test_qwen2_attn(batch, embed_dim, num_kv_heads):
 
     rope = RoPE(rotary_inv_freq(head_dim, base))
     nnm_cos, nnm_sin = rope(position_ids)
-    nnm_attn = SelfAttention(
+    nnm_attn = RotarySelfAttention(
         embed_dim,
         num_attn_heads,
         num_kv_heads,
         qkv_bias=True,
         o_bias=False,
-        rope=rope,
     )
 
     config = cfg.Qwen2Config(
@@ -101,7 +100,7 @@ def test_qwen2_attn(batch, embed_dim, num_kv_heads):
     torch.testing.assert_close(nnm_cos, hf_cos, atol=1e-5, rtol=1e-5)
     torch.testing.assert_close(nnm_sin, hf_sin, atol=1e-5, rtol=1e-5)
 
-    nnm_o = nnm_attn(x)
+    nnm_o = nnm_attn(x, rotary_embeddings=(nnm_cos, nnm_sin))
     hf_attn.eval()
 
     hf_o, hf_attn_weight = hf_attn(x, (hf_cos, hf_sin), None)
@@ -171,7 +170,6 @@ def test_qwen2_decoder_layer(batch, embed_dim, num_attn_heads, num_kv_heads):
     head_dim = embed_dim // num_attn_heads
     nnm_rope = RoPE(rotary_inv_freq(head_dim, base))
     nnm_decoder = Qwen2DecoderLayer(
-        position_encoder=nnm_rope,
         embed_dim=embed_dim,
         intermediate_size=intermediate_size,
         num_attn_heads=num_attn_heads,
@@ -199,7 +197,8 @@ def test_qwen2_decoder_layer(batch, embed_dim, num_attn_heads, num_kv_heads):
     hf_cos, hf_sin = hf_rope(x, position_ids)
     attn_mask = None
 
-    nnm_o = nnm_decoder(x, attn_mask=attn_mask)
+    nnm_cos, nnm_sin = nnm_rope(torch.arange(seq_len))
+    nnm_o = nnm_decoder(x, rotary_embeddings=(nnm_cos, nnm_sin), attn_mask=attn_mask)
     hf_o = hf_decoder(x, position_embeddings=(hf_cos, hf_sin), attention_mask=attn_mask)[0]
     if nnm_o.shape != hf_o.shape:
         nnm_o = nnm_o[0]

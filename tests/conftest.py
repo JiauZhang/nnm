@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 
@@ -65,6 +66,33 @@ def weight_module(weights_root):
         return module
 
     return load
+
+
+def _count_checkpoint_parameters(directory):
+    from safetensors import safe_open  # noqa: PLC0415
+
+    total = 0
+    for path in sorted(Path(directory).glob("*.safetensors")):
+        with safe_open(path, framework="pt", device="cpu") as handle:
+            for key in handle.keys():
+                shape = handle.get_slice(key).get_shape()
+                total += int(math.prod(shape))
+    return total
+
+
+@pytest.fixture(scope="session")
+def weight_limit():
+    def check(target):
+        if isinstance(target, (str, Path)):
+            if not os.path.isdir(target):
+                return
+            total = _count_checkpoint_parameters(target)
+        else:
+            total = sum(parameter.numel() for parameter in target.parameters())
+        if total > 2_000_000_000:
+            pytest.skip(f"checkpoint has {total / 1e9:.2f}B parameters, weight verification is limited to 2B")
+
+    return check
 
 
 @pytest.fixture(scope="session")

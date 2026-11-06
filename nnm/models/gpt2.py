@@ -1,67 +1,23 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from functools import partial
+from torch import nn
 
 from nnm.cache import KVCache
-from nnm.layers.attention import causal_attention
+from nnm.layers.attention import SelfAttention
 from nnm.layers.attention_mask import make_causal_mask
+from nnm.layers.mlp import MLP
+from nnm.layers.transformer import TransformerBlock
 from nnm.models.pretrained import PretrainedModel
 
 
-class GPT2Attention(nn.Module):
+class GPT2Attention(SelfAttention):
     def __init__(self, *, embed_dim, num_heads, max_seq_len, use_cache=False):
-        super().__init__()
-        assert embed_dim % num_heads == 0
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
+        super().__init__(embed_dim, num_heads, qkv_bias=True, o_bias=True)
         self.use_cache = use_cache
-        self.attn_scale = self.head_dim**-0.5
-
-        self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim, bias=True)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
         self.register_buffer("bias", torch.tril(torch.ones(max_seq_len, max_seq_len)).view(1, 1, max_seq_len, max_seq_len))
 
     def forward(self, x, attn_mask=None, cache=None):
-        batch, seq_len, _ = x.shape
-
-        query, key, value = (
-            part.reshape(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            for part in self.qkv_proj(x).chunk(3, dim=-1)
-        )
-
-        output = causal_attention(
-            query,
-            key,
-            value,
-            cache=cache if self.use_cache else None,
-            attn_mask=attn_mask,
-            scale=self.attn_scale,
-        )
-        return self.out_proj(output)
-
-
-class GPT2MLP(nn.Module):
-    def __init__(self, *, embed_dim, intermediate_size):
-        super().__init__()
-        self.fc_in = nn.Linear(embed_dim, intermediate_size, bias=True)
-        self.fc_out = nn.Linear(intermediate_size, embed_dim, bias=True)
-
-    def forward(self, x):
-        return self.fc_out(F.gelu(self.fc_in(x), approximate="tanh"))
-
-
-class GPT2DecoderLayer(nn.Module):
-    def __init__(self, *, embed_dim, intermediate_size, num_heads, max_seq_len, eps, use_cache=False):
-        super().__init__()
-        self.attn = GPT2Attention(embed_dim=embed_dim, num_heads=num_heads, max_seq_len=max_seq_len, use_cache=use_cache)
-        self.mlp = GPT2MLP(embed_dim=embed_dim, intermediate_size=intermediate_size)
-        self.norm_1 = nn.LayerNorm(embed_dim, eps=eps)
-        self.norm_2 = nn.LayerNorm(embed_dim, eps=eps)
-
-    def forward(self, x, attn_mask=None, cache=None):
-        x = x + self.attn(self.norm_1(x), attn_mask=attn_mask, cache=cache)
-        return x + self.mlp(self.norm_2(x))
+        return super().forward(x, attn_mask=attn_mask, cache=cache if self.use_cache else None)
 
 
 class GPT2Backbone(nn.Module):
@@ -76,13 +32,11 @@ class GPT2Backbone(nn.Module):
         self.position_embeds = nn.Embedding(max_seq_len, embed_dim)
         self.layers = nn.ModuleList(
             [
-                GPT2DecoderLayer(
-                    embed_dim=embed_dim,
-                    intermediate_size=intermediate_size,
-                    num_heads=num_heads,
-                    max_seq_len=max_seq_len,
-                    eps=eps,
-                    use_cache=use_cache,
+                TransformerBlock(
+                    embed_dim,
+                    GPT2Attention(embed_dim=embed_dim, num_heads=num_heads, max_seq_len=max_seq_len, use_cache=use_cache),
+                    MLP(embed_dim, intermediate_size, activation="gelu_pytorch_tanh", bias=True),
+                    norm_layer=partial(nn.LayerNorm, eps=eps),
                 )
                 for _ in range(num_layers)
             ]

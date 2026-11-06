@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, apply_rope, rotary_inv_freq
 from nnm.models.pretrained import PretrainedModel
@@ -27,17 +28,6 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x):
         return self.output(F.silu(self.hidden(x))) + self.residual(x)
-
-
-class SwiGLU(nn.Module):
-    def __init__(self, embed_dim, hidden_dim, bias):
-        super().__init__()
-        self.gate_up = nn.Linear(embed_dim, 2 * hidden_dim, bias=bias)
-        self.down = nn.Linear(hidden_dim, embed_dim, bias=bias)
-
-    def forward(self, x):
-        gate, up = self.gate_up(x).chunk(2, dim=-1)
-        return self.down(gate * F.silu(up))
 
 
 def scaled_dot_product_attention(query, key, value, mask, is_causal=False):
@@ -105,7 +95,7 @@ class TransformerBlock(nn.Module):
             [Attention(embed_dim, num_heads, is_time, attn_bias, time_gate if is_time else variate_gate) for is_time in axes]
         )
         self.mlp_norm = RMSNorm(embed_dim, norm_eps)
-        self.mlp = SwiGLU(embed_dim, mlp_hidden_dim, mlp_bias)
+        self.mlp = GatedMLP(embed_dim, mlp_hidden_dim, mlp_bias)
 
     def forward(self, x, time_mask, variate_mask, cos, sin):
         for norm, attn in zip(self.attn_norms, self.attns):

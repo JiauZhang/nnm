@@ -1,10 +1,12 @@
 import torch
+from functools import partial
 from torch import nn
 from torch.nn import functional as F
 
-from nnm.layers.attention import ragged_attention
-from nnm.layers.rope import RoPE2D, apply_rope
-from nnm.layers.transformer import MLP
+from nnm.layers.attention import RotarySelfAttention
+from nnm.layers.rope import RoPE2D
+from nnm.layers.mlp import MLP
+from nnm.layers.transformer import TransformerBlock
 
 
 class NaViTPatchEmbedding(nn.Module):
@@ -71,59 +73,35 @@ class NaViTPatchEmbedding(nn.Module):
         return patch_embeds
 
 
-class NaViTAttention(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.embed_dim = config.hidden_size
-        self.num_heads = config.num_attention_heads
-        self.head_dim = self.embed_dim // self.num_heads
-        self.scale = self.head_dim**-0.5
-        self.use_rope = config.use_rope
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
-
-    def forward(self, hidden_states, cu_seqlens, position_embeddings=None):
-        seq_len = hidden_states.shape[0]
-        query = self.q_proj(hidden_states).view(seq_len, self.num_heads, self.head_dim)
-        key = self.k_proj(hidden_states).view(seq_len, self.num_heads, self.head_dim)
-        value = self.v_proj(hidden_states).view(seq_len, self.num_heads, self.head_dim)
-
-        if self.use_rope:
-            cos, sin = position_embeddings
-            query, key = apply_rope(query, cos, sin, dim=1), apply_rope(key, cos, sin, dim=1)
-
-        lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
-        return self.out_proj(ragged_attention(query, key, value, lengths, scale=self.scale))
-
-
-class NaViTEncoderLayer(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.layer_norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.self_attn = NaViTAttention(config)
-        self.layer_norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.mlp = MLP(config.hidden_size, config.intermediate_size, config.hidden_act)
-
-    def forward(self, hidden_states, cu_seqlens, position_embeddings=None):
-        hidden_states = hidden_states + self.self_attn(self.layer_norm1(hidden_states), cu_seqlens, position_embeddings)
-        hidden_states = hidden_states + self.mlp(self.layer_norm2(hidden_states))
-        return hidden_states
-
-
 class NaViTEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.hidden_stride = config.hidden_stride
         self.patch_size = config.patch_size
         self.window_size = config.window_size
+        self.use_rope = config.use_rope
         self.spatial_merge_unit = self.hidden_stride**2
         self.fullatt_block_indexes = self._parse_block_indexes(config.fullatt_block_indexes)
         spatial_dim = config.hidden_size // config.num_attention_heads // 2
         inv_freq = 1.0 / (10000.0 ** (torch.arange(0, spatial_dim, 2, dtype=torch.float) / spatial_dim))
         self.rotary_pos_emb = RoPE2D([inv_freq, inv_freq.clone()])
-        self.layers = nn.ModuleList([NaViTEncoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList(
+            [
+                TransformerBlock(
+                    config.hidden_size,
+                    RotarySelfAttention(
+                        config.hidden_size,
+                        config.num_attention_heads,
+                        qkv_bias=True,
+                        o_bias=True,
+                        causal=False,
+                    ),
+                    MLP(config.hidden_size, config.intermediate_size, config.hidden_act),
+                    norm_layer=partial(nn.LayerNorm, eps=config.layer_norm_eps),
+                )
+                for _ in range(config.num_hidden_layers)
+            ]
+        )
 
     @staticmethod
     def _parse_block_indexes(indexes):
@@ -193,18 +171,20 @@ class NaViTEncoder(nn.Module):
         num_units = seq_len // self.spatial_merge_unit
         inputs_embeds = inputs_embeds.reshape(num_units, self.spatial_merge_unit, -1)[window_index].reshape(seq_len, -1)
         rotary_positions = rotary_positions.reshape(num_units, self.spatial_merge_unit, -1)[window_index].reshape(seq_len, -1)
-        position_embeddings = self.rotary_pos_emb(rotary_positions)
+        position_embeddings = self.rotary_pos_emb(rotary_positions) if self.use_rope else (None, None)
         reverse_indices = torch.argsort(window_index)
 
         cu_seqlens = torch.repeat_interleave(grid_thws[:, 1] * grid_thws[:, 2], grid_thws[:, 0]).cumsum(dim=0)
         cu_seqlens = F.pad(cu_seqlens.to(torch.int32), (1, 0), value=0)
 
-        hidden_states = inputs_embeds
+        hidden_states = inputs_embeds[None]
         encoder_states = []
+        rotary_embeddings = position_embeddings if self.use_rope else None
         for index, layer in enumerate(self.layers):
             use_window = self.fullatt_block_indexes is not None and index not in self.fullatt_block_indexes
             layer_seqlens = cu_window_seqlens if use_window else cu_seqlens
-            hidden_states = layer(hidden_states, layer_seqlens, position_embeddings)
+            lengths = (layer_seqlens[1:] - layer_seqlens[:-1]).tolist()
+            hidden_states = layer(hidden_states, rotary_embeddings=rotary_embeddings, lengths=lengths)
             if output_hidden_states:
                 encoder_states.append(
                     hidden_states.reshape(num_units, self.spatial_merge_unit, -1)[reverse_indices].reshape(seq_len, -1)

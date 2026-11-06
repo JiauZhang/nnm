@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 
 def quick_gelu(x):
@@ -19,3 +20,12 @@ def get_activation(name):
     if name in ACTIVATIONS:
         return ACTIVATIONS[name]
     return getattr(F, name)
+
+
+class Activation(nn.Module):
+    def __init__(self, name):
+        super().__init__()
+        self.fn = get_activation(name)
+
+    def forward(self, hidden):
+        return self.fn(hidden)

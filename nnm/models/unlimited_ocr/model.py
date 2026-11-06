@@ -1,22 +1,17 @@
 import math
 
 import torch
+from conippets.config import Config
 from torch import nn
 
 from nnm.layers.embedding import merge_placeholders
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, RoPE2D, yarn_inv_freq
+from nnm.models.clip import CLIPVisionModel
 from nnm.models.pretrained import PretrainedModel
-from nnm.models.unlimited_ocr.clip import ClipEncoder
+from nnm.models.sam import SamVisionEncoder
 from nnm.models.unlimited_ocr.decoder import DecoderLayer
-from nnm.models.unlimited_ocr.projector import MlpProjector
-from nnm.models.unlimited_ocr.sam import SamEncoder
-from nnm.models.unlimited_ocr.sparse import (
-    build_candidate_mask,
-    build_page_aware_ids,
-    build_page_rope_pos,
-    image_block_mask,
-)
+from nnm.models.unlimited_ocr.sparse import build_page_layout
 
 
 class UnlimitedOCRModel(nn.Module):
@@ -32,31 +27,44 @@ class UnlimitedOCRModel(nn.Module):
         vision = config.vision_config
         sam_config = vision["width"]["sam_vit_b"]
         clip_config = vision["width"]["clip-l-14-224"]
-        self.sam_model = SamEncoder(
-            image_size=sam_config.get("image_size", vision.get("image_size", 1024)),
-            patch_size=sam_config.get("patch_size", 16),
-            width=sam_config.width,
-            depth=sam_config.layers,
-            num_heads=sam_config.heads,
-            mlp_ratio=sam_config.get("mlp_ratio", 4.0),
-            out_chans=sam_config.get("out_chans", 256),
-            window_size=sam_config.get("window_size", 14),
-            global_attn_indexes=sam_config.get("global_attn_indexes", ()),
-            downsample_channels=sam_config.get("downsample_channels", (512, 1024)),
-            norm_eps=sam_config.get("norm_eps", 1e-6),
+        out_chans = sam_config.get("out_chans", 256)
+        downsample_channels = sam_config.get("downsample_channels", (512, 1024))
+        self.sam_model = SamVisionEncoder(
+            Config(
+                hidden_size=sam_config.width,
+                num_attention_heads=sam_config.heads,
+                image_size=sam_config.get("image_size", vision.get("image_size", 1024)),
+                patch_size=sam_config.get("patch_size", 16),
+                num_hidden_layers=sam_config.layers,
+                mlp_ratio=sam_config.get("mlp_ratio", 4.0),
+                output_channels=out_chans,
+                window_size=sam_config.get("window_size", 14),
+                global_attn_indexes=list(sam_config.get("global_attn_indexes", ())),
+                layer_norm_eps=sam_config.get("norm_eps", 1e-6),
+            )
         )
-        self.vision_model = ClipEncoder(
-            width=clip_config.width,
-            image_size=clip_config.get("image_size", 224),
-            patch_size=clip_config.get("patch_size", 14),
-            depth=clip_config.layers,
-            num_heads=clip_config.heads,
-            hidden_dim=clip_config.get("ffn_hidden_size", int(clip_config.width * clip_config.get("mlp_ratio", 4.0))),
-            pre_layernorm_eps=clip_config.get("pre_layernorm_epsilon", 1e-5),
-            norm_eps=clip_config.get("layernorm_epsilon", 1e-5),
+        self.sam_downsample_2x = nn.Conv2d(out_chans, downsample_channels[0], kernel_size=3, stride=2, padding=1, bias=False)
+        self.sam_downsample_4x = nn.Conv2d(
+            downsample_channels[0], downsample_channels[1], kernel_size=3, stride=2, padding=1, bias=False
         )
+        self.vision_model = CLIPVisionModel(
+            Config(
+                hidden_size=clip_config.width,
+                num_attention_heads=clip_config.heads,
+                num_hidden_layers=clip_config.layers,
+                intermediate_size=clip_config.get(
+                    "ffn_hidden_size", int(clip_config.width * clip_config.get("mlp_ratio", 4.0))
+                ),
+                image_size=clip_config.get("image_size", 224),
+                patch_size=clip_config.get("patch_size", 14),
+                layer_norm_eps=clip_config.get("layernorm_epsilon", 1e-5),
+                hidden_act="quick_gelu",
+            ),
+            post_layernorm=False,
+        )
+        self.vision_model.pre_layrnorm = nn.LayerNorm(clip_config.width, eps=clip_config.get("pre_layernorm_epsilon", 1e-5))
         projector_config = config.projector_config
-        self.projector = MlpProjector(input_dim=projector_config.input_dim, n_embed=projector_config.n_embed)
+        self.projector = nn.Linear(projector_config.input_dim, projector_config.n_embed)
         n_embed = projector_config.n_embed
         embed_std = 1 / math.sqrt(n_embed)
         self.image_newline = nn.Parameter(torch.randn(n_embed) * embed_std)
@@ -100,8 +108,8 @@ class UnlimitedOCRModel(nn.Module):
 
     def encode_page(self, pixel_values):
         pixel_values = pixel_values.to(self.image_newline.dtype)
-        sam_features = self.sam_model(pixel_values)
-        clip_features = self.vision_model(pixel_values, sam_features)
+        sam_features = self.sam_downsample_4x(self.sam_downsample_2x(self.sam_model(pixel_values)))
+        clip_features = self.vision_model(pixel_values, patch_embeds=sam_features)["last_hidden_state"]
         merged = torch.cat((clip_features[:, 1:], sam_features.flatten(2).transpose(1, 2)), dim=-1)
         features = self.projector(merged)[0]
         height, width = sam_features.shape[2], sam_features.shape[3]
@@ -112,41 +120,25 @@ class UnlimitedOCRModel(nn.Module):
         return torch.cat([features, self.view_seperator[None, :]], dim=0)
 
     def _page_context(self, input_ids, position_ids, dtype_reference, seq_len):
-        page_pos = None
-        if input_ids is not None and self.page_rope_2d is not None:
-            page_pos = build_page_rope_pos(input_ids, self.image_token_id, self.page_token_id)
-        if page_pos is not None:
-            page = page_pos[1]
+        layout = build_page_layout(input_ids, self.image_token_id, self.page_token_id, self.per_page_image_tokens)
+        if layout.rope_pages is not None and self.page_rope_2d is not None:
+            page = layout.rope_pages
             if self.page_mod > 0:
                 page = torch.remainder(page, self.page_mod)
-            positions = torch.stack([page_pos[0], page], dim=-1)
-            cos, sin = self.page_rope_2d(positions)
+            cos, sin = self.page_rope_2d(torch.stack([layout.rope_tokens, page], dim=-1))
         else:
             cos, sin = self.yarn_rope(position_ids)
-        block_candidate = None
-        image_blocks = None
         num_key_blocks = (seq_len + self.block_size - 1) // self.block_size
-        if input_ids is not None:
-            image_mask, image_pages, query_pages = build_page_aware_ids(
-                input_ids, self.image_token_id, self.page_token_id, self.per_page_image_tokens
-            )
-            if image_pages is not None and query_pages is not None:
-                chunks = []
-                for start in range(0, seq_len, 2048):
-                    end = min(start + 2048, seq_len)
-                    chunks.append(
-                        build_candidate_mask(
-                            position_ids[:, start:end],
-                            num_key_blocks,
-                            image_mask,
-                            image_pages,
-                            query_pages,
-                            self.block_size,
-                        )
-                    )
-                block_candidate = torch.cat(chunks, dim=2)[:, 0]
-            if image_mask is not None:
-                image_blocks = image_block_mask(image_mask, num_key_blocks, self.block_size)
+        block_candidate = None
+        if layout.image_pages is not None and layout.query_pages is not None:
+            chunks = []
+            for start in range(0, seq_len, 2048):
+                end = min(start + 2048, seq_len)
+                chunks.append(layout.candidate_mask(position_ids[:, start:end], num_key_blocks, self.block_size))
+            block_candidate = torch.cat(chunks, dim=2)[:, 0]
+        image_blocks = None
+        if layout.image_mask is not None:
+            image_blocks = layout.image_blocks(num_key_blocks, self.block_size)
         return cos, sin, block_candidate, image_blocks
 
     def forward(self, input_ids=None, inputs_embeds=None, pixel_values=None, attention_mask=None):

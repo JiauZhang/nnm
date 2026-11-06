@@ -4,10 +4,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from nnm.layers.mlp import GateMLP
+from nnm.layers.attention import RotarySelfAttention
+from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.transformer import SelfAttention
+from nnm.layers.vit import LayerScale
+from nnm.layers.vq import ResidualVectorQuantization
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -104,7 +106,7 @@ class DecoderBlock(nn.Module):
         return hidden
 
 
-class CodecAttention(SelfAttention):
+class CodecAttention(RotarySelfAttention):
     def __init__(self, config):
         head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         super().__init__(
@@ -118,28 +120,19 @@ class CodecAttention(SelfAttention):
         )
 
 
-class LayerScale(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.scale = nn.Parameter(torch.full((config.hidden_size,), config.layer_scale_initial_scale))
-
-    def forward(self, hidden):
-        return self.scale * hidden
-
-
 class CodecLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.self_attn = CodecAttention(config)
-        self.mlp = GateMLP(config.hidden_size, config.intermediate_size)
+        self.mlp = GatedMLP(config.hidden_size, config.intermediate_size)
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.self_attn_layer_scale = LayerScale(config)
-        self.mlp_layer_scale = LayerScale(config)
+        self.self_attn_layer_scale = LayerScale(config.hidden_size, config.layer_scale_initial_scale)
+        self.mlp_layer_scale = LayerScale(config.hidden_size, config.layer_scale_initial_scale)
 
-    def forward(self, hidden, cos, sin):
+    def forward(self, hidden, rotary_embeddings):
         residual = hidden
-        hidden = residual + self.self_attn_layer_scale(self.self_attn(self.input_layernorm(hidden), cos, sin))
+        hidden = residual + self.self_attn_layer_scale(self.self_attn(self.input_layernorm(hidden), rotary_embeddings))
         residual = hidden
         return residual + self.mlp_layer_scale(self.mlp(self.post_attention_layernorm(hidden)))
 
@@ -158,45 +151,10 @@ class CodecTransformer(nn.Module):
     def forward(self, hidden):
         hidden = self.input_proj(hidden)
         positions = torch.arange(0, hidden.shape[1], device=hidden.device)
-        cos, sin = self.rotary_emb(positions)
+        rotary_embeddings = self.rotary_emb(positions)
         for layer in self.layers:
-            hidden = layer(hidden, cos, sin)
+            hidden = layer(hidden, rotary_embeddings)
         return self.output_proj(self.norm(hidden))
-
-
-class EuclideanCodebook(nn.Module):
-    def __init__(self, dim, codebook_size, epsilon=1e-5):
-        super().__init__()
-        self.epsilon = epsilon
-        self.cluster_usage = nn.Parameter(torch.ones(codebook_size))
-        self.embedding_sum = nn.Parameter(torch.zeros(codebook_size, dim))
-
-    def decode(self, codes):
-        embedding = self.embedding_sum / self.cluster_usage.clamp(min=self.epsilon)[:, None]
-        return F.embedding(codes, embedding)
-
-
-class VectorQuantization(nn.Module):
-    def __init__(self, dim, codebook_size, codebook_dim=None, epsilon=1e-5):
-        super().__init__()
-        codebook_dim = dim if codebook_dim is None else codebook_dim
-        self.project_out = nn.Linear(codebook_dim, dim) if codebook_dim != dim else nn.Identity()
-        self._codebook = EuclideanCodebook(codebook_dim, codebook_size, epsilon)
-
-    def decode(self, codes):
-        return self.project_out(self._codebook.decode(codes)).transpose(1, 2)
-
-
-class ResidualVectorQuantization(nn.Module):
-    def __init__(self, *, num_quantizers, **kwargs):
-        super().__init__()
-        self.layers = nn.ModuleList([VectorQuantization(**kwargs) for _ in range(num_quantizers)])
-
-    def decode(self, codes):
-        quantized = torch.zeros([1], device=codes.device)[0]
-        for index, layer_codes in enumerate(codes):
-            quantized = quantized + self.layers[index].decode(layer_codes)
-        return quantized
 
 
 class ResidualVectorQuantizer(nn.Module):

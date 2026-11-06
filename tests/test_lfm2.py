@@ -28,9 +28,9 @@ def init_linear_weight(src, dst, bias=True):
 
 
 def init_mlp_weight(src, dst):
-    init_linear_weight(src.w1, dst.w1, bias=False)
-    init_linear_weight(src.w3, dst.w3, bias=False)
-    init_linear_weight(src.w2, dst.w2, bias=False)
+    init_linear_weight(src.gate_proj, dst.w1, bias=False)
+    init_linear_weight(src.up_proj, dst.w3, bias=False)
+    init_linear_weight(src.down_proj, dst.w2, bias=False)
 
 
 def init_decoder_layer(nnm_decoder, hf_decoder):
@@ -120,7 +120,7 @@ def test_lfm2_attn(batch, hidden_size, num_attention_heads, num_key_value_heads)
         norm_eps=1e-6,
     )
     rope = RoPE(rotary_inv_freq(head_dim, base))
-    nnm_attn = Lfm2Attention(config=nnm_config, position_encoder=rope)
+    nnm_attn = Lfm2Attention(config=nnm_config)
     hf_attn = lfm2.Lfm2Attention(config, layer_idx=0)
 
     init_linear_weight(nnm_attn.q_proj, hf_attn.q_proj, bias=False)
@@ -133,7 +133,8 @@ def test_lfm2_attn(batch, hidden_size, num_attention_heads, num_key_value_heads)
     hf_rope = lfm2.Lfm2RotaryEmbedding(config=config)
     hf_cos, hf_sin = hf_rope(x, position_ids)
 
-    nnm_o = nnm_attn(x)
+    nnm_cos, nnm_sin = rope(torch.arange(seq_len))
+    nnm_o = nnm_attn(x, rotary_embeddings=(nnm_cos, nnm_sin))
     hf_o, _ = hf_attn(x, position_embeddings=(hf_cos, hf_sin), attention_mask=None)
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 
@@ -189,9 +190,7 @@ def test_lfm2_decoder_layer(hidden_size, num_attention_heads, num_key_value_head
         block_auto_adjust_ff_dim=False,
     )
     rope = RoPE(rotary_inv_freq(head_dim, base))
-    nnm_decoder = Lfm2DecoderLayer(
-        config=nnm_config, layer_idx=0, position_encoder=rope, is_attention_layer=is_attn, head_dim=head_dim
-    )
+    nnm_decoder = Lfm2DecoderLayer(config=nnm_config, layer_idx=0, is_attention_layer=is_attn, head_dim=head_dim)
     hf_decoder = lfm2.Lfm2DecoderLayer(config, layer_idx=0)
     init_decoder_layer(nnm_decoder, hf_decoder)
 
@@ -201,7 +200,8 @@ def test_lfm2_decoder_layer(hidden_size, num_attention_heads, num_key_value_head
     hf_rope = lfm2.Lfm2RotaryEmbedding(config=config)
     hf_cos, hf_sin = hf_rope(x, position_ids)
 
-    nnm_o = nnm_decoder(x)
+    nnm_cos, nnm_sin = rope(torch.arange(seq_len))
+    nnm_o = nnm_decoder(x, rotary_embeddings=(nnm_cos, nnm_sin))
     hf_o = hf_decoder(x, position_embeddings=(hf_cos, hf_sin), attention_mask=None)
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
 

@@ -1,4 +1,5 @@
 import math
+from typing import NamedTuple
 
 import torch
 from torch import nn
@@ -41,87 +42,81 @@ def entmax15(x, dim=-1):
     return torch.clamp(x - tau_star, min=0) ** 2
 
 
-def image_block_mask(image_token_mask, num_key_blocks, block_size):
-    batch, seq_len = image_token_mask.shape
-    padded = num_key_blocks * block_size
-    if padded > seq_len:
-        image_token_mask = F.pad(image_token_mask, (0, padded - seq_len), value=False)
-    else:
-        image_token_mask = image_token_mask[..., :padded]
-    return image_token_mask.view(batch, num_key_blocks, block_size).any(dim=-1)
+class PageLayout(NamedTuple):
+    image_mask: torch.Tensor | None
+    image_pages: torch.Tensor | None
+    query_pages: torch.Tensor | None
+    rope_tokens: torch.Tensor | None
+    rope_pages: torch.Tensor | None
 
-
-def build_page_aware_ids(input_ids, image_token_id, page_token_id, per_page_image_tokens):
-    if input_ids is None or image_token_id is None or page_token_id is None:
-        return None, None, None
-    device = input_ids.device
-    image_token_mask = input_ids == image_token_id
-    page_starts = input_ids == page_token_id
-    cum_pages = torch.cumsum(page_starts.long(), dim=-1)
-    seq_len = input_ids.shape[-1]
-    positions = torch.arange(seq_len, device=device)
-    last_image = (image_token_mask.long() * (positions + 1)).max(dim=-1).values - 1
-    prompt_pages = cum_pages.gather(1, last_image.clamp(min=0)[:, None]) * (last_image >= 0)[:, None].long()
-    marker_mode = prompt_pages > 0
-    per_page = max(1, int(per_page_image_tokens))
-    running = torch.cumsum(image_token_mask.long(), dim=-1) - 1
-    image_page_ids = torch.where(marker_mode, cum_pages - 1, running // per_page)
-    image_page_ids = image_page_ids.masked_fill(~image_token_mask, -1)
-    raw_page = cum_pages - 1
-    response_page = raw_page - torch.where(marker_mode, prompt_pages, torch.zeros_like(prompt_pages))
-    in_prefill = positions[None, :] <= last_image[:, None]
-    query_page_ids = torch.where(in_prefill, raw_page, response_page)
-    query_page_ids = query_page_ids.masked_fill(query_page_ids < 0, -1)
-    if image_token_mask.sum() == 0 or (query_page_ids >= 0).sum() == 0:
-        return None, None, None
-    return image_token_mask, image_page_ids, query_page_ids
-
-
-def build_page_rope_pos(input_ids, image_token_id, page_token_id):
-    if input_ids is None or image_token_id is None or page_token_id is None:
-        return None
-    device = input_ids.device
-    batch, seq_len = input_ids.shape
-    positions = torch.arange(seq_len, device=device)
-    image_mask = input_ids == image_token_id
-    marker_mask = input_ids == page_token_id
-    if not bool(image_mask.any()) or not bool(marker_mask.any()):
-        return None
-    cum_pages = torch.cumsum(marker_mask.long(), dim=-1)
-    last_image = (image_mask.long() * (positions + 1)).max(dim=-1).values - 1
-    n_pages = cum_pages.gather(1, last_image.clamp(min=0)[:, None]) * (last_image >= 0)[:, None].long()
-    if not bool((n_pages > 0).all()):
-        return None
-    in_prefill = positions[None, :] <= last_image[:, None]
-    page = torch.where(in_prefill, cum_pages, cum_pages - n_pages).clamp(min=0)
-    n_page_buckets = int(page.max().item()) + 1
-    onehot = F.one_hot(page, num_classes=n_page_buckets).to(torch.int32)
-    run = onehot.cumsum(dim=1)
-    tok = run.gather(2, page[:, :, None].to(torch.int64)).squeeze(-1).to(torch.int64) - 1
-    return tok, page.to(torch.int64)
-
-
-def build_candidate_mask(pos_chunk, num_key_blocks, image_token_mask, image_page_ids, query_page_ids, block_size):
-    batch, chunk = pos_chunk.shape
-    if image_page_ids is not None and query_page_ids is not None:
-        page_len = image_page_ids.shape[-1]
-        query_pages = query_page_ids.gather(1, pos_chunk.clamp(0, page_len - 1))
-        padded = num_key_blocks * block_size - page_len
-        if padded > 0:
-            image_pages = F.pad(image_page_ids.float(), (0, padded), value=-1).long()
+    def image_blocks(self, num_key_blocks, block_size):
+        batch, seq_len = self.image_mask.shape
+        padded = num_key_blocks * block_size
+        mask = self.image_mask
+        if padded > seq_len:
+            mask = F.pad(mask, (0, padded - seq_len), value=False)
         else:
-            image_pages = image_page_ids[..., : num_key_blocks * block_size]
-        image_page_blocks = image_pages.view(batch, num_key_blocks, block_size)
-        same_page = (query_pages[:, :, None, None] >= 0) & (query_pages[:, :, None, None] == image_page_blocks[:, None, :, :])
-        block_has_page = same_page.any(dim=-1)
-        candidate = block_has_page.unsqueeze(1)
-    elif image_token_mask is not None:
-        blocks = image_block_mask(image_token_mask, num_key_blocks, block_size)
-        candidate = blocks[:, None, None, :].expand(batch, 1, chunk, num_key_blocks).contiguous()
+            mask = mask[..., :padded]
+        return mask.view(batch, num_key_blocks, block_size).any(dim=-1)
+
+    def candidate_mask(self, pos_chunk, num_key_blocks, block_size):
+        batch, chunk = pos_chunk.shape
+        if self.image_pages is not None and self.query_pages is not None:
+            page_len = self.image_pages.shape[-1]
+            query_pages = self.query_pages.gather(1, pos_chunk.clamp(0, page_len - 1))
+            padded = num_key_blocks * block_size - page_len
+            if padded > 0:
+                image_pages = F.pad(self.image_pages.float(), (0, padded), value=-1).long()
+            else:
+                image_pages = self.image_pages[..., : num_key_blocks * block_size]
+            image_page_blocks = image_pages.view(batch, num_key_blocks, block_size)
+            same_page = (query_pages[:, :, None, None] >= 0) & (
+                query_pages[:, :, None, None] == image_page_blocks[:, None, :, :]
+            )
+            candidate = same_page.any(dim=-1).unsqueeze(1)
+        elif self.image_mask is not None:
+            blocks = self.image_blocks(num_key_blocks, block_size)
+            candidate = blocks[:, None, None, :].expand(batch, 1, chunk, num_key_blocks).contiguous()
+        else:
+            candidate = torch.ones(batch, 1, chunk, num_key_blocks, dtype=torch.bool, device=pos_chunk.device)
+        has_candidate = candidate.any(dim=-1, keepdim=True)
+        return torch.where(has_candidate, candidate, torch.ones_like(candidate))
+
+
+def build_page_layout(input_ids, image_token_id, page_token_id, per_page_image_tokens):
+    if input_ids is None or image_token_id is None or page_token_id is None:
+        return PageLayout(None, None, None, None, None)
+    device = input_ids.device
+    image_mask = input_ids == image_token_id
+    has_image = bool(image_mask.any())
+    marker_mask = input_ids == page_token_id
+    positions = torch.arange(input_ids.shape[-1], device=device)
+    last_image = (image_mask.long() * (positions + 1)).max(dim=-1).values - 1
+    cum_pages = torch.cumsum(marker_mask.long(), dim=-1)
+    n_pages = cum_pages.gather(1, last_image.clamp(min=0)[:, None]) * (last_image >= 0)[:, None].long()
+    in_prefill = positions[None, :] <= last_image[:, None]
+
+    per_page = max(1, int(per_page_image_tokens))
+    running = torch.cumsum(image_mask.long(), dim=-1) - 1
+    image_pages = torch.where(n_pages > 0, cum_pages - 1, running // per_page).masked_fill(~image_mask, -1)
+
+    raw_page = cum_pages - 1
+    response_page = raw_page - torch.where(n_pages > 0, n_pages, torch.zeros_like(n_pages))
+    query_pages = torch.where(in_prefill, raw_page, response_page)
+    query_pages = query_pages.masked_fill(query_pages < 0, -1)
+    if not has_image or (query_pages >= 0).sum() == 0:
+        image_mask = image_pages = query_pages = None
+
+    if not (has_image and bool(marker_mask.any()) and bool((n_pages > 0).all())):
+        rope_tokens = rope_pages = None
     else:
-        candidate = torch.ones(batch, 1, chunk, num_key_blocks, dtype=torch.bool, device=pos_chunk.device)
-    has_candidate = candidate.any(dim=-1, keepdim=True)
-    return torch.where(has_candidate, candidate, torch.ones_like(candidate))
+        page = torch.where(in_prefill, cum_pages, cum_pages - n_pages).clamp(min=0)
+        onehot = F.one_hot(page, num_classes=int(page.max().item()) + 1).to(torch.int32)
+        run = onehot.cumsum(dim=1)
+        rope_tokens = run.gather(2, page[:, :, None].to(torch.int64)).squeeze(-1).to(torch.int64) - 1
+        rope_pages = page.to(torch.int64)
+
+    return PageLayout(image_mask, image_pages, query_pages, rope_tokens, rope_pages)
 
 
 def sparse_keep_mask(block_indices, position_ids, key_length, block_size, local_window, valid):
@@ -141,16 +136,6 @@ def sparse_keep_mask(block_indices, position_ids, key_length, block_size, local_
     )
     causal = key_positions[None, None, :] <= position_ids[:, :, None]
     return (block_keep | local) & causal
-
-
-class SparseIndexer(nn.Module):
-    def __init__(self, *, hidden_size, index_dim, num_index_heads, eps):
-        super().__init__()
-        self.num_index_heads = num_index_heads
-        self.q_proj = nn.Linear(hidden_size, num_index_heads * index_dim, bias=False)
-        self.k_proj = nn.Linear(hidden_size, index_dim, bias=False)
-        self.q_norm = PageIndexNorm(index_dim, eps=eps)
-        self.k_norm = PageIndexNorm(index_dim, eps=eps)
 
 
 class BlockRouter(nn.Module):

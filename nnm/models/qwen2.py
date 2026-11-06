@@ -1,14 +1,16 @@
 import torch
+from functools import partial
 from torch import nn
-from nnm.layers.mlp import GateMLP
+from nnm.layers.attention import RotarySelfAttention
+from nnm.layers.mlp import GatedMLP
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.layers.attention_mask import make_causal_mask
-from nnm.layers.transformer import SelfAttention, TransformerBlock
+from nnm.layers.transformer import TransformerBlock
 from nnm.cache import KVCache
 from nnm.models.pretrained import PretrainedModel
 
 
-class Qwen2MLP(GateMLP):
+class Qwen2MLP(GatedMLP):
     def __init__(self, *, embed_dim, intermediate_size):
         super().__init__(embed_dim, intermediate_size)
 
@@ -17,7 +19,6 @@ class Qwen2DecoderLayer(TransformerBlock):
     def __init__(
         self,
         *,
-        position_encoder,
         embed_dim,
         intermediate_size,
         num_attn_heads,
@@ -25,20 +26,18 @@ class Qwen2DecoderLayer(TransformerBlock):
         eps,
         use_cache=False,
     ):
-        attention = SelfAttention(
+        attention = RotarySelfAttention(
             embed_dim,
             num_attn_heads,
             num_kv_heads,
             qkv_bias=True,
             o_bias=False,
-            rope=position_encoder,
         )
         super().__init__(
             embed_dim,
-            eps,
             attention,
             Qwen2MLP(embed_dim=embed_dim, intermediate_size=intermediate_size),
-            norm_factory=lambda dim: nn.RMSNorm(dim, eps=eps, elementwise_affine=True),
+            norm_layer=partial(nn.RMSNorm, eps=eps, elementwise_affine=True),
         )
 
 
@@ -72,7 +71,6 @@ class Qwen2Backbone(nn.Module):
         self.layers = nn.ModuleList(
             [
                 Qwen2DecoderLayer(
-                    position_encoder=self.position_encoder,
                     embed_dim=embed_dim,
                     intermediate_size=intermediate_size,
                     num_attn_heads=num_attn_heads,
@@ -86,8 +84,8 @@ class Qwen2Backbone(nn.Module):
         self.norm = nn.RMSNorm(embed_dim, eps=rms_norm_eps, elementwise_affine=True)
         self.caches = [KVCache() for _ in range(num_hidden_layers)] if use_cache else None
 
-    def forward(self, input_ids, attn_mask=None):
-        output_embeds = self.token_embeds(input_ids)
+    def forward(self, input_ids=None, attn_mask=None, inputs_embeds=None):
+        output_embeds = self.token_embeds(input_ids) if inputs_embeds is None else inputs_embeds
         cache_len = self.caches[0].kv_len if self.use_cache and self.caches else 0
         if attn_mask is not None:
             batch, seq_len = attn_mask.shape
@@ -100,8 +98,10 @@ class Qwen2Backbone(nn.Module):
                 attn_mask=attn_mask,
                 sliding_window=self.sliding_window,
             )
+        positions = torch.arange(cache_len, cache_len + output_embeds.shape[1], device=output_embeds.device)
+        rotary_embeddings = self.position_encoder(positions)
         for decoder_layer, cache in zip(self.layers, self.caches or [None] * len(self.layers)):
-            output_embeds = decoder_layer(output_embeds, attn_mask=attn_mask, cache=cache)
+            output_embeds = decoder_layer(output_embeds, rotary_embeddings=rotary_embeddings, attn_mask=attn_mask, cache=cache)
         output_embeds = self.norm(output_embeds)
         return output_embeds
 

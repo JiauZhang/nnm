@@ -1,5 +1,8 @@
 import os
 
+import importlib.util
+import json
+
 import numpy as np
 import pytest
 import torch
@@ -13,6 +16,19 @@ from nnm.models.kitten_tts.predictor import Predictor
 from nnm.models.kitten_tts.decoder import KittenDecoder
 from nnm.models.kitten_tts.generator import KittenGenerator
 from nnm.models.kitten_tts.text import text_to_tokens
+
+
+def map_checkpoint(state_dict, model_path, config):
+    manifest_path = os.path.join(model_path, "nnm_weights.json")
+    if not os.path.exists(manifest_path):
+        return state_dict
+    mapping = json.loads(open(manifest_path).read()).get("mapping")
+    if mapping is None:
+        return state_dict
+    spec = importlib.util.spec_from_file_location("kitten_tts_mapping", os.path.join(model_path, mapping))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.map_state_dict(state_dict, config)
 
 
 @pytest.fixture(scope="module")
@@ -195,7 +211,7 @@ class TestRegression:
         config = Config.from_json(os.path.join(model_path, "config.json"))
         checkpoint = torch.load(os.path.join(model_path, "model.pth"), map_location="cpu", weights_only=True)
         model2 = KittenTTS(config, voices_path=voices_path)
-        model2.load_state_dict(checkpoint.get("state_dict", checkpoint), strict=True)
+        model2.load_state_dict(map_checkpoint(checkpoint.get("state_dict", checkpoint), model_path, config), strict=True)
         model2.eval()
         model2.generator.m_source.sin_gen.phase_jitter_scale = 0.0
         result2 = model2.synthesize("Hello world", voice="Bruno")

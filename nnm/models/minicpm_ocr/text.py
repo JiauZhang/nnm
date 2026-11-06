@@ -1,37 +1,18 @@
 import torch
 import torch.nn.functional as F
+from functools import partial
 from torch import nn
 
-from nnm.layers.attention import causal_attention
+from nnm.layers.attention import RotarySelfAttention
+from nnm.layers.mlp import GatedMLP
+from nnm.layers.norm import RMSNorm, ZCRMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.models.minicpm_ocr.cache import build_layers_cache
 
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim, eps):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.zeros(dim))
-
-    def forward(self, x):
-        output = x.float() * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps)
-        output = output * (1.0 + self.weight.float())
-        return output.type_as(x)
-
-
-class RMSNormGated(nn.Module):
-    def __init__(self, dim, eps):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-
+class RMSNormGated(RMSNorm):
     def forward(self, x, gate):
-        dtype = x.dtype
-        x = x.float()
-        x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-        x = self.weight * x.to(dtype)
-        x = x * F.silu(gate.float())
-        return x.to(dtype)
+        return (super().forward(x) * F.silu(gate.float())).to(x.dtype)
 
 
 def l2norm(x, eps=1e-6):
@@ -120,44 +101,6 @@ def recurrent_gated_delta_rule(query, key, value, g, beta, *, initial_state=None
     return output, (state if output_final_state else None)
 
 
-class MLP(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
-
-    def forward(self, x):
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
-
-
-class Attention(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.head_dim = config.head_dim
-        self.num_heads = config.num_attention_heads
-        self.num_kv_heads = config.num_key_value_heads
-        self.scaling = self.head_dim**-0.5
-        self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim * 2, bias=config.attention_bias)
-        self.k_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
-        self.v_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias)
-        self.q_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
-
-    def forward(self, x, cos, sin, cache=None):
-        batch, seq_len = x.shape[:2]
-        query, gate = self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim * 2).chunk(2, dim=-1)
-        gate = gate.reshape(batch, seq_len, -1)
-
-        query = self.q_norm(query).transpose(1, 2)
-        key = self.k_norm(self.k_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim)).transpose(1, 2)
-        value = self.v_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-
-        output = causal_attention(query, key, value, cos=cos, sin=sin, cache=cache, rope_dim=1, scale=self.scaling)
-        return self.o_proj(output * torch.sigmoid(gate))
-
-
 class GatedDeltaNet(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -225,6 +168,37 @@ class GatedDeltaNet(nn.Module):
         return self.out_proj(output.reshape(batch, seq_len, -1))
 
 
+class TextAttention(RotarySelfAttention):
+    def __init__(self, config):
+        super().__init__(
+            config.hidden_size,
+            config.num_attention_heads,
+            config.num_key_value_heads,
+            config.head_dim,
+            qkv_bias=config.attention_bias,
+            o_bias=config.attention_bias,
+            qk_norm=True,
+            norm_layer=partial(ZCRMSNorm, eps=config.rms_norm_eps),
+        )
+        self.q_proj = nn.Linear(
+            config.hidden_size,
+            2 * config.num_attention_heads * self.head_dim,
+            bias=config.attention_bias,
+        )
+
+    def forward(self, x, rotary_embeddings=None, cache=None, attn_mask=None):
+        batch, seq_len = x.shape[:2]
+        query, key, value = self.project(x)
+        query = query.view(batch, seq_len, self.num_heads, 2 * self.head_dim)
+        query, gate = query.chunk(2, dim=-1)
+        gate = gate.reshape(batch, seq_len, -1)
+        query = query.reshape(batch, seq_len, -1)
+        query, key, value = self.split_heads(query, key, value)
+        query, key = self.apply_rotary(query, key, rotary_embeddings)
+        output = self.attend_heads(query, key, value, cache=cache, attn_mask=attn_mask)
+        return self.o_proj(output * torch.sigmoid(gate))
+
+
 class DecoderLayer(nn.Module):
     def __init__(self, config, layer_index):
         super().__init__()
@@ -232,10 +206,10 @@ class DecoderLayer(nn.Module):
         if self.layer_type == "linear_attention":
             self.linear_attn = GatedDeltaNet(config)
         else:
-            self.attn = Attention(config)
-        self.mlp = MLP(config)
-        self.norm_1 = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.norm_2 = RMSNorm(config.hidden_size, config.rms_norm_eps)
+            self.attn = TextAttention(config)
+        self.mlp = GatedMLP(config.hidden_size, config.intermediate_size)
+        self.norm_1 = ZCRMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.norm_2 = ZCRMSNorm(config.hidden_size, config.rms_norm_eps)
 
     def forward(self, x, cos, sin, cache=None):
         residual = x
@@ -243,7 +217,7 @@ class DecoderLayer(nn.Module):
         if self.layer_type == "linear_attention":
             hidden = self.linear_attn(hidden, cache=cache)
         else:
-            hidden = self.attn(hidden, cos, sin, cache=cache)
+            hidden = self.attn(hidden, rotary_embeddings=(cos, sin), cache=cache)
         x = residual + hidden
 
         residual = x
@@ -261,7 +235,7 @@ class Qwen3_5Backbone(nn.Module):
             config.vocab_size, config.hidden_size, padding_idx=getattr(config, "pad_token_id", None)
         )
         self.layers = nn.ModuleList([DecoderLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.norm = ZCRMSNorm(config.hidden_size, config.rms_norm_eps)
         self.rope = RoPE(
             rotary_inv_freq(
                 config.head_dim,

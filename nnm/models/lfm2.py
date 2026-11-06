@@ -1,14 +1,15 @@
 import torch
+from functools import partial
 from torch import nn
-from nnm.layers.mlp import SwiGLU
+from nnm.layers.attention import RotarySelfAttention
+from nnm.layers.mlp import GatedMLP
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.cache import KVCache, StateCache
-from nnm.layers.transformer import SelfAttention
 from nnm.models.pretrained import PretrainedModel
 from nnm.layers.conv import ShortConv
 
 
-class Lfm2MLP(SwiGLU):
+class Lfm2MLP(GatedMLP):
     def __init__(
         self,
         *,
@@ -26,37 +27,41 @@ class Lfm2MLP(SwiGLU):
         super().__init__(hidden_size, intermediate_size)
 
 
-class Lfm2Attention(SelfAttention):
-    def __init__(self, *, config, position_encoder):
+class Lfm2Attention(RotarySelfAttention):
+    def __init__(self, *, config):
         hidden_size = config.hidden_size
         num_attention_heads = config.num_attention_heads
         num_key_value_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
         head_dim = getattr(config, "head_dim", hidden_size // num_attention_heads)
+        norm_eps = getattr(config, "norm_eps", 1e-6)
         super().__init__(
             hidden_size,
             num_attention_heads,
             num_key_value_heads,
             head_dim,
-            q_norm=True,
-            k_norm=True,
-            norm_eps=getattr(config, "norm_eps", 1e-6),
-            rope=position_encoder,
+            qk_norm=True,
+            norm_layer=partial(nn.RMSNorm, eps=norm_eps, elementwise_affine=True),
         )
         self.use_cache = getattr(config, "use_cache", False)
 
-    def forward(self, hidden_states, attn_mask=None, cache=None):
-        return super().forward(hidden_states, cache=cache if self.use_cache else None, attn_mask=attn_mask)
+    def forward(self, hidden_states, rotary_embeddings, attn_mask=None, cache=None):
+        return super().forward(
+            hidden_states,
+            rotary_embeddings,
+            cache=cache if self.use_cache else None,
+            attn_mask=attn_mask,
+        )
 
 
 class Lfm2DecoderLayer(nn.Module):
-    def __init__(self, *, config, layer_idx, position_encoder, is_attention_layer, head_dim=None):
+    def __init__(self, *, config, layer_idx, is_attention_layer, head_dim=None):
         super().__init__()
         self.is_attention_layer = is_attention_layer
         hidden_size = config.hidden_size
         norm_eps = getattr(config, "norm_eps", 1e-6)
 
         if is_attention_layer:
-            self.self_attn = Lfm2Attention(config=config, position_encoder=position_encoder)
+            self.self_attn = Lfm2Attention(config=config)
         else:
             self.conv = ShortConv(
                 hidden_size,
@@ -77,11 +82,12 @@ class Lfm2DecoderLayer(nn.Module):
         self.operator_norm = nn.RMSNorm(hidden_size, eps=norm_eps, elementwise_affine=True)
         self.ffn_norm = nn.RMSNorm(hidden_size, eps=norm_eps, elementwise_affine=True)
 
-    def forward(self, hidden_states, attn_mask=None, cache=None):
+    def forward(self, hidden_states, rotary_embeddings=None, attn_mask=None, cache=None):
         residual = hidden_states
         if self.is_attention_layer:
             hidden_states = self.self_attn(
                 hidden_states=self.operator_norm(hidden_states),
+                rotary_embeddings=rotary_embeddings,
                 attn_mask=attn_mask,
                 cache=cache,
             )
@@ -119,7 +125,6 @@ class Lfm2Backbone(nn.Module):
                 Lfm2DecoderLayer(
                     config=config,
                     layer_idx=layer_idx,
-                    position_encoder=self.position_encoder,
                     is_attention_layer=self.layer_types[layer_idx] == "full_attention",
                     head_dim=self.head_dim,
                 )
@@ -139,10 +144,17 @@ class Lfm2Backbone(nn.Module):
 
     def forward(self, input_ids, attn_mask=None):
         hidden_states = self.embed_tokens(input_ids)
+        cache_len = next(
+            (cache.kv_len for cache in self.caches or [] if isinstance(cache, KVCache)),
+            0,
+        )
+        positions = torch.arange(cache_len, cache_len + hidden_states.shape[1], device=hidden_states.device)
+        rotary_embeddings = self.position_encoder(positions)
 
         for decoder_layer, cache in zip(self.layers, self.caches or [None] * len(self.layers)):
             hidden_states = decoder_layer(
                 hidden_states,
+                rotary_embeddings=rotary_embeddings,
                 attn_mask=attn_mask,
                 cache=cache,
             )

@@ -6,17 +6,17 @@ import pytest
 import torch
 
 from conippets.config import Config
+from torch import nn
+
 from nnm.layers.rope import RoPE2D, apply_rope
+from nnm.models.clip import CLIPVisionModel
+from nnm.models.sam import SamVisionEncoder
 from nnm.models.unlimited_ocr import (
     BlockRouter,
-    ClipEncoder,
     MoE,
-    SamEncoder,
     UnlimitedOCR,
     UnlimitedOCRModel,
-    build_candidate_mask,
-    build_page_aware_ids,
-    build_page_rope_pos,
+    build_page_layout,
     entmax15,
     sparse_keep_mask,
 )
@@ -161,8 +161,7 @@ def expected_parameter_count(config):
     hidden = config.hidden_size
     index_dim = config.sparse_attention_config.sparse_index_dim
     attention = 4 * hidden * hidden
-    projections = 2 * hidden * index_dim + 2 * index_dim
-    router = projections + index_dim
+    router = 2 * hidden * index_dim + 2 * index_dim + index_dim
     norms = 2 * hidden
     dense_mlp = 2 * hidden * config.intermediate_size + config.intermediate_size * hidden
     moe = (
@@ -176,7 +175,7 @@ def expected_parameter_count(config):
         config.vocab_size * hidden
         + config.vocab_size * hidden
         + 3 * hidden
-        + config.num_hidden_layers * (norms + attention + projections + router)
+        + config.num_hidden_layers * (norms + attention + router)
         + dense_layers * dense_mlp
         + moe_layers * moe
     )
@@ -189,45 +188,50 @@ def test_parameter_count_matches_config(weight_config):
         model = UnlimitedOCR(config)
     total = sum(parameter.numel() for parameter in model.parameters())
     assert total == expected_parameter_count(config)
-    assert total == 3_343_978_240
+    assert total == 3_340_043_008
 
 
 def test_sam_encoder_shapes():
-    encoder = SamEncoder(
-        image_size=56,
-        patch_size=7,
-        width=16,
-        depth=2,
-        num_heads=2,
-        mlp_ratio=2.0,
-        out_chans=8,
-        window_size=4,
-        global_attn_indexes=[1],
-        downsample_channels=(16, 16),
-        norm_eps=1e-6,
+    encoder = SamVisionEncoder(
+        Config(
+            hidden_size=16,
+            num_attention_heads=2,
+            image_size=56,
+            patch_size=7,
+            num_hidden_layers=2,
+            mlp_ratio=2.0,
+            output_channels=8,
+            window_size=4,
+            global_attn_indexes=[1],
+            layer_norm_eps=1e-6,
+        )
     )
-    pixel_values = torch.randn(2, 3, 56, 56)
-    output = encoder(pixel_values)
+    downsample_2x = nn.Conv2d(8, 16, kernel_size=3, stride=2, padding=1, bias=False)
+    downsample_4x = nn.Conv2d(16, 16, kernel_size=3, stride=2, padding=1, bias=False)
+    output = downsample_4x(downsample_2x(encoder(torch.randn(2, 3, 56, 56))))
     assert output.shape == (2, 16, 2, 2)
     assert torch.isfinite(output).all()
 
 
 def test_clip_encoder_shapes():
-    encoder = ClipEncoder(
-        width=16,
-        image_size=14,
-        patch_size=7,
-        depth=2,
-        num_heads=2,
-        hidden_dim=32,
-        pre_layernorm_eps=1e-5,
-        norm_eps=1e-5,
+    encoder = CLIPVisionModel(
+        Config(
+            hidden_size=16,
+            num_attention_heads=2,
+            num_hidden_layers=2,
+            intermediate_size=32,
+            image_size=14,
+            patch_size=7,
+            layer_norm_eps=1e-5,
+            hidden_act="quick_gelu",
+        ),
+        post_layernorm=False,
     )
     patch_embeds = torch.randn(2, 16, 2, 2)
-    output = encoder(torch.randn(2, 3, 14, 14), patch_embeds)
+    output = encoder(torch.randn(2, 3, 14, 14), patch_embeds=patch_embeds)["last_hidden_state"]
     assert output.shape == (2, 5, 16)
     patch_embeds = torch.randn(2, 16, 3, 3)
-    output = encoder(torch.randn(2, 3, 14, 14), patch_embeds)
+    output = encoder(torch.randn(2, 3, 14, 14), patch_embeds=patch_embeds)["last_hidden_state"]
     assert output.shape == (2, 10, 16)
     assert torch.isfinite(output).all()
 
@@ -265,23 +269,23 @@ def test_moe_routing_matches_manual_experts():
 
 def test_page_aware_candidate_mask():
     input_ids = torch.tensor([[60, 61, 61, 60, 61, 61, 60, 62, 62, 62, 62, 62]])
-    image_mask, image_pages, query_pages = build_page_aware_ids(input_ids, 61, 60, 2)
-    assert image_mask is not None
-    assert image_pages.tolist() == [[-1, 0, 0, -1, 1, 1, -1, -1, -1, -1, -1, -1]]
-    assert query_pages.tolist() == [[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]]
+    layout = build_page_layout(input_ids, 61, 60, 2)
+    assert layout.image_mask is not None
+    assert layout.image_pages.tolist() == [[-1, 0, 0, -1, 1, 1, -1, -1, -1, -1, -1, -1]]
+    assert layout.query_pages.tolist() == [[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]]
     position_ids = torch.arange(12)[None]
-    candidate = build_candidate_mask(position_ids[:, 6:12], 6, image_mask, image_pages, query_pages, 2)
+    candidate = layout.candidate_mask(position_ids[:, 6:12], 6, 2)
     assert candidate.shape == (1, 1, 6, 6)
     assert candidate[0, 0, 7 - 6].tolist() == [True, True, False, False, False, False]
-    candidate_image_query = build_candidate_mask(position_ids[:, 4:5], 6, image_mask, image_pages, query_pages, 2)
+    candidate_image_query = layout.candidate_mask(position_ids[:, 4:5], 6, 2)
     assert candidate_image_query[0, 0, 0].tolist() == [False, False, True, False, False, False]
 
 
 def test_page_rope_positions():
     input_ids = torch.tensor([[60, 61, 61, 60, 61, 61, 60, 62, 62, 62, 62, 62]])
-    tok, page = build_page_rope_pos(input_ids, 61, 60)
-    assert tok.tolist() == [[0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8]]
-    assert page.tolist() == [[1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1]]
+    layout = build_page_layout(input_ids, 61, 60, 2)
+    assert layout.rope_tokens.tolist() == [[0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8]]
+    assert layout.rope_pages.tolist() == [[1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1]]
 
 
 def page_rope(dim=8, tok_theta=10000.0, page_theta=256.0, page_pairs=1, tok_freq_mode="resample"):
@@ -426,8 +430,9 @@ except Exception as exc:
     print("UPSTREAM_IMPORT_ERROR", repr(exc))
     raise SystemExit(2)
 
-from nnm.models.unlimited_ocr.sam import SamEncoder
-from nnm.models.unlimited_ocr.clip import ClipEncoder
+from conippets.config import Config
+from nnm.models.clip import CLIPVisionModel
+from nnm.models.sam import SamVisionEncoder
 
 torch.manual_seed(0)
 up_sam = upstream.ImageEncoderViT(
@@ -435,16 +440,35 @@ up_sam = upstream.ImageEncoderViT(
     norm_layer=partial(torch.nn.LayerNorm, eps=1e-6), num_heads=2, patch_size=7,
     qkv_bias=True, use_rel_pos=True, global_attn_indexes=[1], window_size=4, out_chans=256,
 )
-our_sam = SamEncoder(
-    image_size=56, patch_size=7, width=16, depth=2, num_heads=2, mlp_ratio=1,
-    out_chans=256, window_size=4, global_attn_indexes=[1],
-    downsample_channels=(512, 1024), norm_eps=1e-6,
-)
-up_sam.load_state_dict(our_sam.state_dict())
+
+
+class OurSam(SamVisionEncoder):
+    def __init__(self):
+        super().__init__(
+            Config(
+                hidden_size=16, num_attention_heads=2, image_size=56, patch_size=7,
+                num_hidden_layers=2, mlp_ratio=1, output_channels=256,
+                window_size=4, global_attn_indexes=[1], layer_norm_eps=1e-6,
+            )
+        )
+        self.downsample_2x = torch.nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1, bias=False)
+        self.downsample_4x = torch.nn.Conv2d(512, 1024, kernel_size=3, stride=2, padding=1, bias=False)
+
+    def forward(self, pixel_values):
+        return self.downsample_4x(self.downsample_2x(super().forward(pixel_values)))
+
+
+ours = OurSam()
+mapped = dict()
+for key, tensor in up_sam.state_dict().items():
+    key = key.replace("patch_embed.projection.", "patch_embed.proj.")
+    key = key.replace("blocks.", "layers.")
+    key = key.replace(".mlp.lin1.", ".mlp.fc1.").replace(".mlp.lin2.", ".mlp.fc2.")
+    key = key.replace("net_2.", "downsample_2x.").replace("net_3.", "downsample_4x.")
+    mapped[key] = tensor
+ours.load_state_dict(mapped, strict=True)
 pixel_values = torch.randn(2, 3, 56, 56)
-reference_sam = up_sam(pixel_values)
-candidate_sam = our_sam(pixel_values)
-torch.testing.assert_close(reference_sam, candidate_sam, atol=1e-4, rtol=1e-4)
+torch.testing.assert_close(up_sam(pixel_values), ours(pixel_values), atol=1e-4, rtol=1e-4)
 
 clip_cfg = upstream.adict(
     num_layers=2, hidden_size=16, num_heads=2, num_attention_heads=2, ffn_hidden_size=32,
@@ -454,15 +478,41 @@ clip_cfg = upstream.adict(
     image_size=14, patch_size=7, recompute_list=[],
 )
 up_clip = upstream.VitModel(cfg=clip_cfg, freeze_embed=False, freeze_pre_norm=False)
-our_clip = ClipEncoder(
-    width=16, image_size=14, patch_size=7, depth=2, num_heads=2, hidden_dim=32,
-    pre_layernorm_eps=1e-5, norm_eps=1e-5,
+ours_clip = CLIPVisionModel(
+    Config(
+        hidden_size=16, num_attention_heads=2, num_hidden_layers=2, intermediate_size=32,
+        image_size=14, patch_size=7, layer_norm_eps=1e-5, hidden_act="quick_gelu",
+    ),
+    post_layernorm=False,
 )
-up_clip.load_state_dict(our_clip.state_dict())
+mapped = dict()
+for key, tensor in up_clip.state_dict().items():
+    if key.endswith("self_attn.qkv_proj.weight") or key.endswith("self_attn.qkv_proj.bias"):
+        prefix = key[: -len("qkv_proj.weight" if key.endswith("weight") else "qkv_proj.bias")]
+        suffix = "weight" if key.endswith("weight") else "bias"
+        for name, part in zip(("q_proj", "k_proj", "v_proj"), tensor.chunk(3, dim=0)):
+            mapped[prefix + name + "." + suffix] = part.contiguous()
+        continue
+    key = key.replace("transformer.layers.", "encoder.layers.")
+    key = key.replace(".layer_norm1.", ".norm1.").replace(".layer_norm2.", ".norm2.")
+    key = key.replace(".self_attn.out_proj.", ".attn.o_proj.")
+    key = key.replace(".self_attn.", ".attn.")
+    mapped[key] = tensor
+ours_clip.load_state_dict(mapped, strict=True)
 patch_embeds = torch.randn(2, 16, 2, 2)
-torch.testing.assert_close(up_clip(pixel_values, patch_embeds), our_clip(pixel_values, patch_embeds), atol=1e-4, rtol=1e-4)
+torch.testing.assert_close(
+    up_clip(pixel_values, patch_embeds),
+    ours_clip(pixel_values, patch_embeds=patch_embeds)["last_hidden_state"],
+    atol=1e-4,
+    rtol=1e-4,
+)
 patch_embeds = torch.randn(2, 16, 3, 3)
-torch.testing.assert_close(up_clip(pixel_values, patch_embeds), our_clip(pixel_values, patch_embeds), atol=1e-4, rtol=1e-4)
+torch.testing.assert_close(
+    up_clip(pixel_values, patch_embeds),
+    ours_clip(pixel_values, patch_embeds=patch_embeds)["last_hidden_state"],
+    atol=1e-4,
+    rtol=1e-4,
+)
 print("UPSTREAM_OK")
 """
     result = subprocess.run(

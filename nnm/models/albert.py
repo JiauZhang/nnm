@@ -1,8 +1,8 @@
-import math
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+from nnm.layers.attention import SelfAttention
+from nnm.layers.mlp import MLP
 
 
 class AlbertEmbeddings(nn.Module):
@@ -29,68 +29,25 @@ class AlbertEmbeddings(nn.Module):
         return embeddings
 
 
-class AlbertAttention(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.num_attention_heads = config.num_heads
-        self.attention_head_size = config.head_dim
-        self.all_head_size = config.num_heads * config.head_dim
-
-        self.query = nn.Linear(config.hidden_dim, self.all_head_size)
-        self.key = nn.Linear(config.hidden_dim, self.all_head_size)
-        self.value = nn.Linear(config.hidden_dim, self.all_head_size)
-        self.dense = nn.Linear(self.all_head_size, config.hidden_dim)
-        self.layer_norm = nn.LayerNorm(config.hidden_dim, eps=config.layernorm_eps)
-        self.dropout = nn.Dropout(0.0)
-
-    def transpose_for_scores(self, x):
-        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
-        x = x.view(new_x_shape)
-        return x.permute(0, 2, 1, 3)
-
-    def forward(self, hidden_states, attention_mask=None):
-        query_layer = self.transpose_for_scores(self.query(hidden_states))
-        key_layer = self.transpose_for_scores(self.key(hidden_states))
-        value_layer = self.transpose_for_scores(self.value(hidden_states))
-
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-
-        if attention_mask is not None:
-            attention_scores = attention_scores + attention_mask
-
-        attention_probs = F.softmax(attention_scores, dim=-1)
-        attention_probs = self.dropout(attention_probs)
-
-        context_layer = torch.matmul(attention_probs, value_layer)
-        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-        context_layer = context_layer.view(new_context_layer_shape)
-
-        projected_context_layer = self.dense(context_layer)
-        projected_context_layer = self.dropout(projected_context_layer)
-        layernormed_context_layer = self.layer_norm(hidden_states + projected_context_layer)
-
-        return layernormed_context_layer
-
-
 class AlbertLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.attention = AlbertAttention(config)
-        self.ffn = nn.Linear(config.hidden_dim, config.ffn_dim)
-        self.ffn_output = nn.Linear(config.ffn_dim, config.hidden_dim)
+        self.attention = SelfAttention(
+            config.hidden_dim,
+            config.num_heads,
+            head_dim=config.head_dim,
+            qkv_bias=True,
+            o_bias=True,
+            causal=False,
+        )
+        self.attention_layer_norm = nn.LayerNorm(config.hidden_dim, eps=config.layernorm_eps)
+        self.ffn = MLP(config.hidden_dim, config.ffn_dim, activation="gelu_pytorch_tanh", bias=True)
         self.full_layer_layer_norm = nn.LayerNorm(config.hidden_dim, eps=config.layernorm_eps)
-        self.dropout = nn.Dropout(0.0)
 
     def forward(self, hidden_states, attention_mask=None):
-        attention_output = self.attention(hidden_states, attention_mask)
+        attention_output = self.attention_layer_norm(hidden_states + self.attention(hidden_states, attn_mask=attention_mask))
         ffn_output = self.ffn(attention_output)
-        ffn_output = F.gelu(ffn_output, approximate="tanh")
-        ffn_output = self.ffn_output(ffn_output)
-        ffn_output = self.dropout(ffn_output)
-        hidden_states = self.full_layer_layer_norm(ffn_output + attention_output)
-        return hidden_states
+        return self.full_layer_layer_norm(ffn_output + attention_output)
 
 
 class AlbertEncoder(nn.Module):

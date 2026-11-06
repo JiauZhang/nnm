@@ -1,12 +1,13 @@
 import torch
 import torch.nn.functional as F
+from functools import partial
 from torch import nn
 
 from nnm.layers.activation import get_activation
-from nnm.layers.mlp import SwiGLU
+from nnm.layers.attention import RotarySelfAttention
+from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE2D
-from nnm.layers.transformer import SelfAttention
 
 
 def vision_inv_freq(config):
@@ -39,7 +40,7 @@ def vision_cu_seqlens(grid_thw):
     return F.pad(lengths.cumsum(0, dtype=torch.int32), (1, 0), value=0)
 
 
-class Lfm3VisionAttention(SelfAttention):
+class Lfm3VisionAttention(RotarySelfAttention):
     def __init__(self, config):
         head_dim = config.hidden_size // config.num_attention_heads
         super().__init__(
@@ -47,14 +48,13 @@ class Lfm3VisionAttention(SelfAttention):
             config.num_attention_heads,
             config.num_key_value_heads,
             head_dim,
-            q_norm=True,
-            k_norm=True,
-            norm_eps=config.norm_eps,
+            qk_norm=True,
+            norm_layer=partial(RMSNorm, eps=config.norm_eps),
             causal=False,
         )
 
     def forward(self, x, lengths, cos, sin):
-        return super().forward(x[None], cos=cos, sin=sin, lengths=lengths)
+        return super().forward(x[None], rotary_embeddings=(cos, sin), lengths=lengths)
 
 
 class Lfm3VisionConv2d(nn.Module):
@@ -105,7 +105,7 @@ class Lfm3VisionLayer(nn.Module):
             self.self_attn = Lfm3VisionAttention(config)
         else:
             self.conv = Lfm3VisionConv2d(config)
-        self.feed_forward = SwiGLU(config.hidden_size, config.intermediate_size)
+        self.feed_forward = GatedMLP(config.hidden_size, config.intermediate_size)
         self.operator_norm = RMSNorm(config.hidden_size, config.norm_eps)
         self.ffn_norm = RMSNorm(config.hidden_size, config.norm_eps)
 
