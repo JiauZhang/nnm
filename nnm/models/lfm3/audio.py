@@ -7,7 +7,7 @@ from nnm.layers.embedding import merge_placeholders
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.models.lfm2 import Lfm2DecoderLayer
-from nnm.models.lfm3.language import Attention, DecoderLayer, Lfm3EmbeddingBackbone
+from nnm.models.lfm3.language import Attention, DecoderLayer, Lfm3EmbeddingModel
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -204,6 +204,29 @@ def audio_codebook_loss(depth_decoder, hidden_states, input_ids, audio_labels, c
     return (losses * masked).sum() / masked.sum().clamp_min(1)
 
 
+class AudioTower(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.encoder = AudioEncoder(config.audio_encoder_config)
+        self.projector = AudioProjector(config)
+        self.codebook_embedding = nn.Embedding(config.num_codebooks * config.codebook_size, config.text_config.hidden_size)
+        self.depth_decoder = AudioDepthDecoder(config)
+
+    def features(self, input_features, feature_attention_mask):
+        feature_lengths = feature_attention_mask.sum(-1)
+        encoded, encoded_lengths = self.encoder(input_features, feature_lengths)
+        valid = torch.arange(encoded.shape[1], device=encoded.device)[None] < encoded_lengths[:, None]
+        return self.projector(encoded[valid])
+
+    def code_embeds(self, audio_out_codes):
+        offsets = torch.arange(self.config.num_codebooks, device=audio_out_codes.device) * self.config.codebook_size
+        return self.codebook_embedding(audio_out_codes + offsets).sum(-2)
+
+    def loss(self, hidden_states, input_ids, audio_labels):
+        return audio_codebook_loss(self.depth_decoder, hidden_states, input_ids, audio_labels, self.config)
+
+
 class Lfm3AudioModel(PretrainedModel):
     def __init__(self, config):
         super().__init__()
@@ -211,11 +234,8 @@ class Lfm3AudioModel(PretrainedModel):
         self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
         self.audio_token_id = config.audio_token_id
         self.audio_out_token_id = config.audio_out_token_id
-        self.backbone = Lfm3EmbeddingBackbone(config.text_config)
-        self.audio_encoder = AudioEncoder(config.audio_encoder_config)
-        self.audio_projector = AudioProjector(config)
-        self.codebook_embedding = nn.Embedding(config.num_codebooks * config.codebook_size, config.text_config.hidden_size)
-        self.depth_decoder = AudioDepthDecoder(config)
+        self.backbone = Lfm3EmbeddingModel(config.text_config)
+        self.audio = AudioTower(config)
         self.lm_head = (
             None
             if self.tie_word_embeddings
@@ -223,15 +243,10 @@ class Lfm3AudioModel(PretrainedModel):
         )
 
     def get_audio_features(self, input_features, feature_attention_mask):
-        feature_lengths = feature_attention_mask.sum(-1)
-        encoded, encoded_lengths = self.audio_encoder(input_features, feature_lengths)
-        valid = torch.arange(encoded.shape[1], device=encoded.device)[None] < encoded_lengths[:, None]
-        return self.audio_projector(encoded[valid])
+        return self.audio.features(input_features, feature_attention_mask)
 
     def get_audio_out_embeds(self, audio_out_codes):
-        codebook_size = self.config.codebook_size
-        offsets = torch.arange(self.config.num_codebooks, device=audio_out_codes.device) * codebook_size
-        return self.codebook_embedding(audio_out_codes + offsets).sum(-2)
+        return self.audio.code_embeds(audio_out_codes)
 
     def embed_audio(self, inputs_embeds, input_ids, features, token_id):
         return merge_placeholders(inputs_embeds, input_ids == token_id, features)
@@ -265,7 +280,7 @@ class Lfm3AudioModel(PretrainedModel):
         return torch.matmul(hidden, self.backbone.embed_tokens.weight.t())
 
     def audio_loss(self, hidden_states, input_ids, audio_labels):
-        return audio_codebook_loss(self.depth_decoder, hidden_states, input_ids, audio_labels, self.config)
+        return self.audio.loss(hidden_states, input_ids, audio_labels)
 
     def clear_cache(self):
         if self.backbone.caches:

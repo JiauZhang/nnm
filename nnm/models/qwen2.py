@@ -41,7 +41,7 @@ class Qwen2DecoderLayer(TransformerBlock):
         )
 
 
-class Qwen2Backbone(nn.Module):
+class Qwen2Model(nn.Module):
     def __init__(
         self,
         *,
@@ -111,7 +111,7 @@ class Qwen2LM(PretrainedModel):
         super().__init__()
         self.config = config
         self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
-        self.backbone = Qwen2Backbone(
+        self.backbone = Qwen2Model(
             vocab_size=config.vocab_size,
             embed_dim=config.hidden_size,
             max_seq_len=config.max_position_embeddings,

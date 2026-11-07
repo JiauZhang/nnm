@@ -3,10 +3,12 @@ import math
 import torch
 from torch import nn
 
+from nnm.layers.engram import Engram
+from nnm.layers.mhc import MHCStack
 from nnm.layers.norm import ZCRMSNorm, rms_unit
 from nnm.layers.sinusoidal import sinusoidal_embedding
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from .layers import ConvSelfAttention, Engram, HadamardMLP, MHCStack, WhistleCrossAttention, WhistleSelfAttention
+from .layers import ConvSelfAttention, HadamardMLP, WhistleCrossAttention, WhistleSelfAttention
 
 
 class ConvolutionBlock(nn.Module):

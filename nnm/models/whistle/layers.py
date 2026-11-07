@@ -4,18 +4,9 @@ import torch.nn.functional as F
 from torch import nn
 
 from nnm.layers.attention import CrossAttention, RotarySelfAttention
-from nnm.layers.norm import rms_unit
 
 HADA_PERM_SEEDS = (11, 13)
 HADA_COND_RANK = 8
-SINKHORN_ITERS = 20
-
-
-def sinkhorn(logits, iters=SINKHORN_ITERS):
-    for _ in range(iters):
-        logits = logits - torch.logsumexp(logits, -1, keepdim=True)
-        logits = logits - torch.logsumexp(logits, -2, keepdim=True)
-    return logits.exp()
 
 
 def hada_perms(n, split=False):
@@ -74,50 +65,6 @@ class HadamardMLP(nn.Module):
         return (self.d4 * z)[..., : self.d_model]
 
 
-class MHCStack(nn.Module):
-    def __init__(self, d_model, num_layers, lanes):
-        super().__init__()
-        self.d_model, self.num_layers, self.lanes = d_model, num_layers, lanes
-        n_lane = lanes * d_model
-        self.a_pre = nn.Parameter(torch.zeros(num_layers))
-        self.a_post = nn.Parameter(torch.zeros(num_layers))
-        self.a_res = nn.Parameter(torch.zeros(num_layers))
-        self.b_pre = nn.Parameter(torch.zeros(num_layers, lanes))
-        self.b_post = nn.Parameter(torch.zeros(num_layers, lanes))
-        self.b_res = nn.Parameter(torch.zeros(num_layers, lanes, lanes))
-        self.phi_pre = nn.Parameter(torch.zeros(num_layers, lanes, n_lane))
-        self.phi_post = nn.Parameter(torch.zeros(num_layers, lanes, n_lane))
-        self.phi_res = nn.Parameter(torch.zeros(num_layers, lanes * lanes, n_lane))
-        self.register_buffer("lane", torch.eye(lanes), persistent=False)
-        self.register_buffer("lane_index", torch.arange(num_layers) % lanes, persistent=False)
-
-    def layer_params(self, index):
-        lane = self.lane[self.lane_index[index]]
-        return dict(
-            pre_off=8 * lane - 4,
-            post_off=-4 * (1 - lane),
-            phi_pre=self.phi_pre[index].T,
-            phi_post=self.phi_post[index].T,
-            phi_res=self.phi_res[index].T,
-            a_pre=self.a_pre[index],
-            a_post=self.a_post[index],
-            a_res=self.a_res[index],
-            b_pre=self.b_pre[index],
-            b_post=self.b_post[index],
-            b_res=self.b_res[index],
-        )
-
-    def advance(self, stream, block, params):
-        batch, length, lanes, channels = stream.shape
-        wide = rms_unit(stream.reshape(batch, length, lanes * channels))
-        h_pre = torch.sigmoid(params["a_pre"] * (wide @ params["phi_pre"]) + params["b_pre"] + params["pre_off"])
-        mixed = torch.einsum("btn,btnc->btc", h_pre, stream)
-        delta = block(mixed) - mixed
-        h_post = 2 * torch.sigmoid(params["a_post"] * (wide @ params["phi_post"]) + params["b_post"] + params["post_off"])
-        h_res = sinkhorn(params["a_res"] * (wide @ params["phi_res"]).reshape(batch, length, lanes, lanes) + params["b_res"])
-        return torch.einsum("btij,btjc->btic", h_res, stream) + h_post[..., None] * delta[:, :, None, :]
-
-
 class WhistleSelfAttention(RotarySelfAttention):
     def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim, v_head_dim, **kwargs):
         super().__init__(hidden_size, num_heads, num_kv_heads, head_dim, v_head_dim, **kwargs)
@@ -163,54 +110,3 @@ def _apply_conv(x, conv):
     hidden = x.transpose(1, 2)
     hidden = F.pad(hidden, (conv.kernel_size[0] - 1, 0))
     return conv(hidden).transpose(1, 2)
-
-
-class Engram(nn.Module):
-    def __init__(self, d_model, tables, slots, sub_dim, num_layers, dilation, orders, heads):
-        super().__init__()
-        self.d_model, self.tables, self.slots, self.sub_dim = d_model, tables, slots, sub_dim
-        self.dilation, self.orders, self.heads = dilation, orders, heads
-        self.embedding = nn.Parameter(torch.zeros(tables, slots, sub_dim))
-        self.key_proj = nn.Linear(tables * sub_dim, d_model, bias=False)
-        self.value_proj = nn.Linear(tables * sub_dim, d_model, bias=False)
-        self.taps = nn.Parameter(torch.zeros(4, d_model))
-
-    def forward(self, tokens):
-        length = tokens.shape[-1]
-        positions = torch.arange(length, device=tokens.device)
-        tables = len(self.orders) * self.heads
-        indices = engram_indices(tokens, self.orders, self.heads, self.slots)
-        offsets = torch.arange(tables, device=tokens.device) * self.slots
-        flat = (indices + offsets).reshape(-1)
-        fetched = self.embedding.reshape(-1, self.sub_dim)[flat]
-        fetched = fetched.reshape(*tokens.shape, tables, self.sub_dim)
-        order_mask = torch.stack([positions >= order - 1 for order in self.orders for _ in range(self.heads)], -1)
-        fetched = (fetched * order_mask.to(fetched.dtype)[None, :, :, None]).reshape(*tokens.shape, -1)
-        key = self.key_proj(fetched)
-        value = self.value_proj(fetched)
-        tapped = self.taps[0] * value
-        for tap in range(1, self.taps.shape[0]):
-            offset = tap * self.dilation
-            shifted = (
-                torch.cat([torch.zeros_like(value[:, :offset]), value[:, :-offset]], dim=1)
-                if offset < length
-                else torch.zeros_like(value)
-            )
-            tapped = tapped + self.taps[tap] * shifted * (positions >= offset).to(value.dtype)[None, :, None]
-        return key, tapped
-
-
-def engram_indices(tokens, orders, heads, slots, seed_heads=0):
-    u = tokens.long() & 0xFFFFFFFF
-    stride = seed_heads or heads
-    out = []
-    for order_index, order in enumerate(orders):
-        for head in range(heads):
-            seed = (0x9E3779B9 * (order_index * stride + head + 1)) & 0xFFFFFFFF
-            acc = torch.full_like(u, seed)
-            for j in range(order):
-                shifted = torch.cat([torch.zeros_like(u[:, :j]), u[:, :-j]], dim=1) if j else u
-                acc = ((acc ^ shifted) * 0x01000193) & 0xFFFFFFFF
-            acc = acc ^ (acc >> 15)
-            out.append(acc % slots)
-    return torch.stack(out, -1)

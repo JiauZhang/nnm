@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from nnm.layers.activation import get_activation
-from nnm.backbone.pp_lcnet_v3 import LCNetV3Encoder, make_divisible
+from .pp_lcnet_v3 import LCNetV3Encoder, make_divisible
 from conippets.config import Config
 
 

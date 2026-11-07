@@ -225,7 +225,7 @@ class DecoderLayer(nn.Module):
         return residual + hidden
 
 
-class Qwen3_5Backbone(nn.Module):
+class Qwen3_5Model(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config

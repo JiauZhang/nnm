@@ -11,7 +11,7 @@ from nnm.models.lfm2 import (
     Lfm2Attention,
     Lfm2MLP,
     Lfm2DecoderLayer,
-    Lfm2Backbone,
+    Lfm2Model,
     Lfm2LM,
 )
 from conippets.config import Config
@@ -229,7 +229,7 @@ def test_lfm2_backbone(batch, hidden_size, num_attention_heads, num_key_value_he
         full_attn_idxs=full_attn_idxs,
         block_auto_adjust_ff_dim=False,
     )
-    nnm_backbone = Lfm2Backbone(nnm_config)
+    nnm_backbone = Lfm2Model(nnm_config)
 
     config = cfg.Lfm2Config(
         hidden_size=hidden_size,

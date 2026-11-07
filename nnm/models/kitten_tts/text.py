@@ -1,14 +1,6 @@
 import os
 import re
 
-import espeakng_loader
-from phonemizer.backend.espeak.wrapper import EspeakWrapper
-
-EspeakWrapper.set_library(espeakng_loader.get_library_path())
-os.environ["ESPEAK_DATA_PATH"] = espeakng_loader.get_data_path()
-
-import phonemizer  # noqa: E402
-
 _PHONEMIZER = None
 _CLEANER = None
 
@@ -16,6 +8,13 @@ _CLEANER = None
 def _get_phonemizer():
     global _PHONEMIZER
     if _PHONEMIZER is None:
+        import espeakng_loader  # noqa: PLC0415
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper  # noqa: PLC0415
+
+        EspeakWrapper.set_library(espeakng_loader.get_library_path())
+        os.environ["ESPEAK_DATA_PATH"] = espeakng_loader.get_data_path()
+        import phonemizer  # noqa: PLC0415
+
         _PHONEMIZER = phonemizer.backend.EspeakBackend(language="en-us", preserve_punctuation=True, with_stress=True)
     return _PHONEMIZER
 

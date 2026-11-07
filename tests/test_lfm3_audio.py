@@ -153,7 +153,7 @@ class TestLfm3Audio:
             features = model.get_audio_features(input_features, feature_mask)
             out_embeds = model.get_audio_out_embeds(codes)
             logits = model(input_ids, input_features, feature_mask, codes)
-            depth = model.depth_decoder(torch.randn(2, 64), codes, torch.zeros(2, 3, dtype=torch.bool))
+            depth = model.audio.depth_decoder(torch.randn(2, 64), codes, torch.zeros(2, 3, dtype=torch.bool))
 
         assert features.shape == (14, 64)
         assert out_embeds.shape == (2, 64)
@@ -182,24 +182,26 @@ class TestLfm3Audio:
         for key in model.state_dict():
             if key.startswith("backbone."):
                 source["lfm.model." + key[len("backbone.") :]] = None
-            elif key.startswith("audio_encoder.downsample."):
-                source["encoder.downsample." + key[len("audio_encoder.downsample.") :]] = None
-            elif key.startswith("audio_encoder.lfm."):
-                source["encoder.lfm.lfm." + key[len("audio_encoder.lfm.") :]] = None
-            elif key.startswith("audio_projector.layer_norm."):
-                source["mlp.model.0." + key[len("audio_projector.layer_norm.") :]] = None
-            elif key.startswith("audio_projector.linear_1."):
-                source["mlp.model.1." + key[len("audio_projector.linear_1.") :]] = None
-            elif key.startswith("audio_projector.linear_2."):
-                source["mlp.model.3." + key[len("audio_projector.linear_2.") :]] = None
-            elif key.startswith("depth_decoder.depth_linear."):
-                source["depth_linear." + key[len("depth_decoder.depth_linear.") :]] = None
-            elif key.startswith("depth_decoder.mask_embedding"):
+            elif key.startswith("audio.encoder.downsample."):
+                source["encoder.downsample." + key[len("audio.encoder.downsample.") :]] = None
+            elif key.startswith("audio.encoder.lfm."):
+                source["encoder.lfm.lfm." + key[len("audio.encoder.lfm.") :]] = None
+            elif key.startswith("audio.projector.layer_norm."):
+                source["mlp.model.0." + key[len("audio.projector.layer_norm.") :]] = None
+            elif key.startswith("audio.projector.linear_1."):
+                source["mlp.model.1." + key[len("audio.projector.linear_1.") :]] = None
+            elif key.startswith("audio.projector.linear_2."):
+                source["mlp.model.3." + key[len("audio.projector.linear_2.") :]] = None
+            elif key.startswith("audio.depth_decoder.depth_linear."):
+                source["depth_linear." + key[len("audio.depth_decoder.depth_linear.") :]] = None
+            elif key.startswith("audio.depth_decoder.mask_embedding"):
                 source["mask_embedding"] = None
-            elif key.startswith("depth_decoder.model."):
-                source["depthformer.model." + key[len("depth_decoder.model.") :]] = None
-            elif key.startswith("depth_decoder.depth_embeddings."):
-                source["depth_embeddings." + key[len("depth_decoder.depth_embeddings.") :]] = None
+            elif key.startswith("audio.depth_decoder.model."):
+                source["depthformer.model." + key[len("audio.depth_decoder.model.") :]] = None
+            elif key.startswith("audio.depth_decoder.depth_embeddings."):
+                source["depth_embeddings." + key[len("audio.depth_decoder.depth_embeddings.") :]] = None
+            elif key.startswith("audio.codebook_embedding."):
+                source["codebook_embedding." + key[len("audio.codebook_embedding.") :]] = None
             else:
                 source[key] = None
 

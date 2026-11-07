@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from nnm.layers.embedding import merge_placeholders
-from nnm.models.lfm3.language import Lfm3EmbeddingBackbone
+from nnm.models.lfm3.language import Lfm3EmbeddingModel
 from nnm.models.lfm3.vision import Lfm3VlMultiModalProjector, Lfm3VlVisionModel
 from nnm.models.pretrained import PretrainedModel
 
@@ -15,7 +15,7 @@ class Lfm3VlModel(PretrainedModel):
         self.image_token_id = config.image_token_id
         self.vision_tower = Lfm3VlVisionModel(config.vision_config)
         self.multi_modal_projector = Lfm3VlMultiModalProjector(config)
-        self.backbone = Lfm3EmbeddingBackbone(config.text_config)
+        self.backbone = Lfm3EmbeddingModel(config.text_config)
         self.lm_head = (
             None
             if self.tie_word_embeddings

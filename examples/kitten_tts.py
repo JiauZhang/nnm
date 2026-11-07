@@ -31,7 +31,6 @@ def main():
     print("Loading model...")
     model = KittenTTS.from_pretrained(args.model_path)
     model.eval()
-    model.generator.m_source.sin_gen.phase_jitter_scale = 0.0
     print("Model loaded.")
 
     if args.list_voices:

@@ -2,8 +2,8 @@ import torch
 from torch import nn
 
 from nnm.layers.embedding import merge_placeholders
-from nnm.models.lfm3.audio import AudioDepthDecoder, AudioEncoder, AudioProjector, audio_codebook_loss
-from nnm.models.lfm3.language import Lfm3EmbeddingBackbone
+from nnm.models.lfm3.audio import AudioTower
+from nnm.models.lfm3.language import Lfm3EmbeddingModel
 from nnm.models.lfm3.vision import Lfm3VisionProjector, Lfm3VisionTower
 from nnm.models.pretrained import PretrainedModel
 
@@ -17,11 +17,8 @@ class Lfm3OmniModel(PretrainedModel):
         self.audio_out_token_id = config.audio_out_token_id
         self.image_token_id = getattr(config, "image_token_id", None)
         self.video_token_id = getattr(config, "video_token_id", None)
-        self.language_model = Lfm3EmbeddingBackbone(config.text_config)
-        self.audio_encoder = AudioEncoder(config.audio_encoder_config)
-        self.audio_projector = AudioProjector(config)
-        self.codebook_embedding = nn.Embedding(config.num_codebooks * config.codebook_size, config.text_config.hidden_size)
-        self.depth_decoder = AudioDepthDecoder(config)
+        self.language_model = Lfm3EmbeddingModel(config.text_config)
+        self.audio = AudioTower(config)
         self.vision_tower = Lfm3VisionTower(config.vision_config)
         self.multi_modal_projector = Lfm3VisionProjector(config)
         self.lm_head = (
@@ -31,14 +28,10 @@ class Lfm3OmniModel(PretrainedModel):
         )
 
     def get_audio_features(self, input_features, feature_attention_mask):
-        feature_lengths = feature_attention_mask.sum(-1)
-        encoded, encoded_lengths = self.audio_encoder(input_features, feature_lengths)
-        valid = torch.arange(encoded.shape[1], device=encoded.device)[None] < encoded_lengths[:, None]
-        return self.audio_projector(encoded[valid])
+        return self.audio.features(input_features, feature_attention_mask)
 
     def get_audio_out_embeds(self, audio_out_codes):
-        offsets = torch.arange(self.config.num_codebooks, device=audio_out_codes.device) * self.config.codebook_size
-        return self.codebook_embedding(audio_out_codes + offsets).sum(-2)
+        return self.audio.code_embeds(audio_out_codes)
 
     def get_image_features(self, pixel_values, grid_thw):
         hidden = self.vision_tower(pixel_values, grid_thw)
@@ -109,7 +102,7 @@ class Lfm3OmniModel(PretrainedModel):
         return torch.matmul(hidden, self.language_model.embed_tokens.weight.t())
 
     def audio_loss(self, hidden_states, input_ids, audio_labels):
-        return audio_codebook_loss(self.depth_decoder, hidden_states, input_ids, audio_labels, self.config)
+        return self.audio.loss(hidden_states, input_ids, audio_labels)
 
     def clear_cache(self):
         if self.language_model.caches:

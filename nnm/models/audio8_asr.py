@@ -4,7 +4,7 @@ from torch import nn
 
 from nnm.layers.mlp import MLP
 from nnm.models.pretrained import PretrainedModel
-from nnm.models.qwen2 import Qwen2Backbone
+from nnm.models.qwen2 import Qwen2Model
 from nnm.models.qwen3_asr.audio import Qwen3ASRAudioEncoder
 
 
@@ -40,7 +40,7 @@ class Audio8ASR(PretrainedModel):
         audio_dim = int(audio_config.output_dim)
 
         self.language_model = nn.Module()
-        self.language_model.model = Qwen2Backbone(
+        self.language_model.model = Qwen2Model(
             vocab_size=config.vocab_size,
             embed_dim=config.hidden_size,
             max_seq_len=config.max_position_embeddings,

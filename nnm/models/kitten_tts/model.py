@@ -69,7 +69,9 @@ class KittenTTS(PretrainedModel):
         lstm_features, cnn_features = self.text_encoder(input_ids, style, bert_output=bert_out)
         te_out = lstm_features.permute(2, 0, 1)
 
-        duration, expanded, shared, f0, n_amp = self.predictor(te_out, style, speed=speed)
+        duration, f0, n_amp = self.predictor(te_out, style, speed=speed)
+        if duration.dim() == 2 and duration.shape[1] == 1:
+            duration = duration[:, 0]
         text_expanded = torch.repeat_interleave(cnn_features, duration, dim=2)
 
         stft_22ch = self.generator.m_source(f0)

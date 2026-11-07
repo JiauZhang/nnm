@@ -1,1 +1,3 @@
-from .model import KittenTTS as KittenTTS
+from .model import KittenTTS
+
+__all__ = ["KittenTTS"]

@@ -103,7 +103,7 @@ class Lfm2DecoderLayer(nn.Module):
         return hidden_states
 
 
-class Lfm2Backbone(nn.Module):
+class Lfm2Model(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.vocab_size = config.vocab_size
@@ -168,7 +168,7 @@ class Lfm2LM(PretrainedModel):
         super().__init__()
         self.config = config
         self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
-        self.backbone = Lfm2Backbone(config)
+        self.backbone = Lfm2Model(config)
         if self.tie_word_embeddings:
             self.lm_head = None
         else:

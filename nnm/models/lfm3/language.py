@@ -75,7 +75,7 @@ class DecoderLayer(nn.Module):
         return hidden + feed_forward
 
 
-class Lfm3Backbone(nn.Module):
+class Lfm3Model(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -119,7 +119,7 @@ class Lfm3Backbone(nn.Module):
         return self.embedding_norm(hidden)
 
 
-class Lfm3EmbeddingBackbone(Lfm3Backbone):
+class Lfm3EmbeddingModel(Lfm3Model):
     pass
 
 
@@ -128,7 +128,7 @@ class Lfm3LM(PretrainedModel):
         super().__init__()
         self.config = config
         self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
-        self.backbone = Lfm3Backbone(config)
+        self.backbone = Lfm3Model(config)
         self.lm_head = None if self.tie_word_embeddings else nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def forward(self, input_ids, attn_mask=None):

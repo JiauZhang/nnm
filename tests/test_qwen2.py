@@ -11,7 +11,7 @@ from nnm.layers.attention import RotarySelfAttention
 from nnm.models.qwen2 import (
     Qwen2MLP,
     Qwen2DecoderLayer,
-    Qwen2Backbone,
+    Qwen2Model,
     Qwen2LM,
 )
 
@@ -237,7 +237,7 @@ def test_qwen2_backbone(
     max_seq_len, seq_len, intermediate_size, base, eps = 512, 123, 256, 23432, 1e-6
     vocab_size, num_hidden_layers, sliding_window = 1234, 6, 1024
     head_dim = embed_dim // num_attn_heads
-    nnm_backbone = Qwen2Backbone(
+    nnm_backbone = Qwen2Model(
         vocab_size=vocab_size,
         embed_dim=embed_dim,
         max_seq_len=max_seq_len,

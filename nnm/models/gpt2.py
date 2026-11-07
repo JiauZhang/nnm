@@ -20,7 +20,7 @@ class GPT2Attention(SelfAttention):
         return super().forward(x, attn_mask=attn_mask, cache=cache if self.use_cache else None)
 
 
-class GPT2Backbone(nn.Module):
+class GPT2Model(nn.Module):
     def __init__(self, *, vocab_size, embed_dim, intermediate_size, max_seq_len, num_layers, num_heads, eps, use_cache=False):
         super().__init__()
         self.vocab_size = vocab_size
@@ -70,7 +70,7 @@ class GPT2LM(PretrainedModel):
         embed_dim = config.n_embd
         intermediate_size = getattr(config, "n_inner", None) or 4 * embed_dim
 
-        self.backbone = GPT2Backbone(
+        self.backbone = GPT2Model(
             vocab_size=config.vocab_size,
             embed_dim=embed_dim,
             intermediate_size=intermediate_size,

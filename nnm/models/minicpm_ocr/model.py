@@ -3,7 +3,7 @@ from torch import nn
 
 from nnm.layers.embedding import merge_placeholders
 from nnm.models.pretrained import PretrainedModel
-from nnm.models.minicpm_ocr.text import Qwen3_5Backbone
+from nnm.models.minicpm_ocr.text import Qwen3_5Model
 from nnm.models.minicpm_ocr.vision import MiniCPMOcrMerger, MiniCPMOcrVisionModel
 
 
@@ -15,7 +15,7 @@ class MiniCPMOcrModel(PretrainedModel):
         self.image_token_id = getattr(config, "image_token_id", None)
         self.downsample_mode = getattr(config, "downsample_mode", "4x")
         self.vision = MiniCPMOcrVisionModel(config.vision_config, insert_layer_id=config.insert_layer_id)
-        self.backbone = Qwen3_5Backbone(config.text_config)
+        self.backbone = Qwen3_5Model(config.text_config)
         self.merger = MiniCPMOcrMerger(
             vision_hidden_size=config.vision_config.hidden_size,
             text_hidden_size=config.text_config.hidden_size,

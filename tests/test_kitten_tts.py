@@ -17,6 +17,14 @@ from nnm.models.kitten_tts.decoder import KittenDecoder
 from nnm.models.kitten_tts.generator import KittenGenerator
 from nnm.models.kitten_tts.text import text_to_tokens
 
+try:
+    import espeakng_loader  # noqa: F401
+    import phonemizer  # noqa: F401
+
+    PHONEMIZER_AVAILABLE = True
+except ImportError:
+    PHONEMIZER_AVAILABLE = False
+
 
 def map_checkpoint(state_dict, model_path, config):
     manifest_path = os.path.join(model_path, "nnm_weights.json")
@@ -45,7 +53,6 @@ def loaded_model(request):
     assert path is not None, "--model-path required for integration tests"
     model = KittenTTS.from_pretrained(path)
     model.eval()
-    model.generator.m_source.sin_gen.phase_jitter_scale = 0.0
     return model
 
 
@@ -87,8 +94,8 @@ class TestPredictor:
         pred = Predictor(config)
         text = torch.randn(10, 1, 256)
         style = torch.randn(1, 256)
-        duration, expanded, shared, f0, n_amp = pred(text, style, speed=1.0)
-        assert duration.ndim == 1
+        duration, f0, n_amp = pred(text, style, speed=1.0)
+        assert duration.shape == (10, 1)
         assert len(duration) > 0
         assert f0.shape[0] == 1
         assert n_amp.shape[0] == 1
@@ -100,8 +107,8 @@ class TestPredictor:
         pred = Predictor(config)
         text = torch.randn(10, 1, 256)
         style = torch.randn(1, 256)
-        dur1, _, _, _, _ = pred(text, style, speed=1.0)
-        dur2, _, _, _, _ = pred(text, style, speed=2.0)
+        dur1, _, _ = pred(text, style, speed=1.0)
+        dur2, _, _ = pred(text, style, speed=2.0)
         assert (dur2 <= dur1).all()
 
 
@@ -161,6 +168,7 @@ class TestModelLoading:
         assert speed == 1.5
 
 
+@pytest.mark.skipif(not PHONEMIZER_AVAILABLE, reason="phonemizer/espeakng required")
 class TestSynthesis:
     @torch.no_grad()
     def test_synthesize_output(self, loaded_model):
@@ -197,6 +205,7 @@ class TestSynthesis:
         assert len(result1["waveform"]) >= len(result2["waveform"])
 
 
+@pytest.mark.skipif(not PHONEMIZER_AVAILABLE, reason="phonemizer/espeakng required")
 class TestRegression:
     @torch.no_grad()
     def test_from_pretrained_vs_direct_init(self, loaded_model, model_path):
@@ -213,7 +222,6 @@ class TestRegression:
         model2 = KittenTTS(config, voices_path=voices_path)
         model2.load_state_dict(map_checkpoint(checkpoint.get("state_dict", checkpoint), model_path, config), strict=True)
         model2.eval()
-        model2.generator.m_source.sin_gen.phase_jitter_scale = 0.0
         result2 = model2.synthesize("Hello world", voice="Bruno")
 
         assert len(result1["waveform"]) == len(result2["waveform"])
@@ -229,6 +237,7 @@ class TestRegression:
         assert result["duration"] is not None
 
 
+@pytest.mark.skipif(not PHONEMIZER_AVAILABLE, reason="phonemizer/espeakng required")
 class TestTextProcessing:
     def test_text_to_tokens_basic(self):
         tokens = text_to_tokens("Hello world")

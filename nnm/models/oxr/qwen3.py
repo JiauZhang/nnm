@@ -10,7 +10,7 @@ from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.layers.transformer import TransformerBlock
 
 
-class Qwen3Backbone(nn.Module):
+class Qwen3Model(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -64,7 +64,7 @@ class Qwen3ForCausalLM(nn.Module):
         super().__init__()
         self.config = config
         self.tie_word_embeddings = config.tie_word_embeddings
-        self.backbone = Qwen3Backbone(config)
+        self.backbone = Qwen3Model(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         if self.tie_word_embeddings:
             self.lm_head.weight = self.backbone.embed_tokens.weight

@@ -5,36 +5,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Conv1d, ConvTranspose1d
 
+from .blocks import AdaIN1d
+
 
 def get_padding(kernel_size, dilation=1):
     return int((kernel_size * dilation - dilation) / 2)
 
 
-class AdaIN(nn.Module):
-    def __init__(self, channels, style_dim):
-        super().__init__()
-        self.norm = nn.InstanceNorm1d(channels, affine=True)
-        self.fc = nn.Linear(style_dim, 2 * channels)
-        self.channels = channels
-
-    def forward(self, x, style):
-        x_norm = self.norm(x)
-        style_params = self.fc(style)
-        gamma = style_params[:, : self.channels].unsqueeze(2)
-        beta = style_params[:, self.channels :].unsqueeze(2)
-        return x_norm * (gamma + 1.0) + beta
-
-
-def _interpolate_1d_half_pixel(x, target_size, mode="linear"):
-    B, C, L = x.shape
-    positions = (torch.arange(target_size, device=x.device, dtype=x.dtype) + 0.5) * L / target_size - 0.5
-    pos_floor = torch.clamp(torch.floor(positions).long(), 0, L - 1)
-    pos_ceil = torch.clamp(pos_floor + 1, 0, L - 1)
-    alpha = (positions - pos_floor.float()).clamp(0, 1)
-
-    x_left = x[:, :, pos_floor]
-    x_right = x[:, :, pos_ceil]
-    return x_left * (1 - alpha.view(1, 1, -1)) + x_right * alpha.view(1, 1, -1)
+HARMONIC_SCALE = 0.1
 
 
 class NoiseResBlock(nn.Module):
@@ -67,8 +45,8 @@ class NoiseResBlock(nn.Module):
         )
 
         n_stages = len(dilations1)
-        self.adain1 = nn.ModuleList([AdaIN(channels, style_dim) for _ in range(n_stages)])
-        self.adain2 = nn.ModuleList([AdaIN(channels, style_dim) for _ in range(n_stages)])
+        self.adain1 = nn.ModuleList([AdaIN1d(channels, style_dim) for _ in range(n_stages)])
+        self.adain2 = nn.ModuleList([AdaIN1d(channels, style_dim) for _ in range(n_stages)])
 
         self.alpha1 = nn.ParameterList([nn.Parameter(torch.randn(1, channels, 1) * 0.02) for _ in range(n_stages)])
         self.alpha2 = nn.ParameterList([nn.Parameter(torch.randn(1, channels, 1) * 0.02) for _ in range(n_stages)])
@@ -105,14 +83,13 @@ class NoiseResBlock(nn.Module):
         return x
 
 
-class MSinGenerator(nn.Module):
+class SineSource(nn.Module):
     def __init__(
         self,
         sample_rate=24000,
         hop_length=300,
         n_harmonics=9,
         voiced_threshold=10.0,
-        phase_jitter_scale=0.01,
     ):
         super().__init__()
         self.l_linear = nn.Linear(n_harmonics, 1, bias=True)
@@ -120,7 +97,6 @@ class MSinGenerator(nn.Module):
         self.hop_length = hop_length
         self.n_harmonics = n_harmonics
         self.voiced_threshold = voiced_threshold
-        self.phase_jitter_scale = phase_jitter_scale
 
     def forward(self, f0):
         B, _, T = f0.shape
@@ -132,52 +108,41 @@ class MSinGenerator(nn.Module):
         phase_inc = phase_inc / self.sample_rate
         phase_inc = phase_inc - torch.floor(phase_inc)
 
-        phase_jitter = torch.rand_like(phase_inc) * self.phase_jitter_scale
-        phase_inc = phase_inc + phase_jitter
-        phase_inc = phase_inc - torch.floor(phase_inc)
-
         phase_inc_expanded = phase_inc.transpose(1, 2)
         phase_inc_expanded = phase_inc_expanded.unsqueeze(-1).expand(B, self.n_harmonics, T, self.hop_length)
         phase_inc_expanded = phase_inc_expanded.reshape(B, self.n_harmonics, audio_len)
 
-        phase_frame = _interpolate_1d_half_pixel(phase_inc_expanded, T, mode="linear")
-
+        phase_frame = F.interpolate(phase_inc_expanded, size=T, mode="linear", align_corners=False)
         phase_frame = torch.cumsum(phase_frame, dim=2)
         phase_frame = phase_frame * 2.0 * math.pi * self.hop_length
 
-        phase_sample = _interpolate_1d_half_pixel(phase_frame, audio_len, mode="linear")
-
+        phase_sample = F.interpolate(phase_frame, size=audio_len, mode="linear", align_corners=False)
         phase_sample = phase_sample.transpose(1, 2)
-        sine_waves = torch.sin(phase_sample) * 0.1
+        sine_waves = torch.sin(phase_sample) * HARMONIC_SCALE
 
         voiced_mask = (f0 > self.voiced_threshold).float()
         voiced_mask_sample = F.interpolate(voiced_mask, size=audio_len, mode="nearest")
-        voiced_mask_expanded = voiced_mask_sample.transpose(1, 2).expand(B, audio_len, self.n_harmonics)
+        sine_waves = sine_waves * voiced_mask_sample.transpose(1, 2).expand(B, audio_len, self.n_harmonics)
 
-        sine_waves = sine_waves * voiced_mask_expanded
-
-        unvoiced_mask = 1.0 - voiced_mask_expanded
-        noise_scale = voiced_mask_expanded * 0.003 + unvoiced_mask * (0.1 / 3.0)
-        sine_waves = sine_waves + torch.randn_like(sine_waves) * noise_scale
-
-        signal = torch.tanh(self.l_linear(sine_waves))
-        return signal
+        return torch.tanh(self.l_linear(sine_waves))
 
 
-class MSource(nn.Module):
-    def __init__(self, stft_real, stft_imag):
+class HarmonicSpectrogram(nn.Module):
+    def __init__(self, stft_real, stft_imag, sample_rate=24000, hop_length=300, stft_stride=5):
         super().__init__()
-        self.sin_gen = MSinGenerator()
+        self.sin_gen = SineSource(sample_rate=sample_rate, hop_length=hop_length)
+        self.stft_stride = stft_stride
         self.register_buffer("stft_real", stft_real)
         self.register_buffer("stft_imag", stft_imag)
 
     def forward(self, f0):
         signal = self.sin_gen(f0)
         signal = signal.transpose(1, 2)
-        signal = F.pad(signal, (10, 10))
+        pad = self.stft_real.shape[-1] // 2
+        signal = F.pad(signal, (pad, pad))
 
-        real = F.conv1d(signal, self.stft_real, stride=5, padding=0)
-        imag = F.conv1d(signal, self.stft_imag, stride=5, padding=0)
+        real = F.conv1d(signal, self.stft_real, stride=self.stft_stride, padding=0)
+        imag = F.conv1d(signal, self.stft_imag, stride=self.stft_stride, padding=0)
 
         magnitude = torch.sqrt(real**2 + imag**2 + 1e-8)
         phase = torch.atan2(imag, real + 1e-8)
@@ -195,7 +160,15 @@ class KittenGenerator(nn.Module):
 
         self._init_from_up_blocks(c, style_dim)
 
-        self.m_source = MSource(self.stft_weight_forward_real, self.stft_weight_forward_imag)
+        self.stft_stride = 5
+        hop_length = math.prod(block["upsample_stride"] for block in c.up_blocks) * self.stft_stride
+        self.m_source = HarmonicSpectrogram(
+            self.stft_weight_forward_real,
+            self.stft_weight_forward_imag,
+            sample_rate=config.sample_rate,
+            hop_length=hop_length,
+            stft_stride=self.stft_stride,
+        )
 
     def _init_from_up_blocks(self, c, style_dim):
         self.ups = nn.ModuleList()
@@ -268,12 +241,12 @@ class KittenGenerator(nn.Module):
         cos_val = torch.cos(sin_val)
         mul_real = exp_val * cos_val
 
-        imag_out = F.conv_transpose1d(mul_imag, self.stft_weight_backward_imag, stride=5, padding=0, groups=1)
-
-        real_out = F.conv_transpose1d(mul_real, self.stft_weight_backward_real, stride=5, padding=0, groups=1)
+        imag_out = F.conv_transpose1d(mul_imag, self.stft_weight_backward_imag, stride=self.stft_stride, padding=0, groups=1)
+        real_out = F.conv_transpose1d(mul_real, self.stft_weight_backward_real, stride=self.stft_stride, padding=0, groups=1)
 
         waveform = real_out - imag_out
-        waveform = waveform[:, 0:1, 10:-10]
+        pad = self.stft_weight_backward_real.shape[-1] // 2
+        waveform = waveform[:, 0:1, pad:-pad]
         if waveform.shape[0] == 1:
             waveform = waveform.squeeze(0).squeeze(0)
         else:
@@ -284,7 +257,7 @@ class KittenGenerator(nn.Module):
     def forward(self, x, style, harmonic_features):
         if style.dim() == 1:
             style = style.unsqueeze(0)
-        style_slice = style[:, :128]
+        style_slice = style[:, : self.config.generator.style_dim]
 
         x = F.leaky_relu(x, self.leaky_relu_slope)
 
@@ -301,12 +274,11 @@ class KittenGenerator(nn.Module):
             x_noise = self.noise_res[i](noise_conv, style_slice)
             x = x_up + x_noise
 
-            n_res = blk["n_resblocks"]
             res_outs = []
-            for _ in range(n_res):
+            for _ in range(blk["n_resblocks"]):
                 res_outs.append(self.resblocks[resblock_idx](x, style_slice))
                 resblock_idx += 1
-            x = sum(res_outs) / len(res_outs)
+            x = torch.stack(res_outs).mean(dim=0)
 
             x = F.leaky_relu(x, self.leaky_relu_slope)
 

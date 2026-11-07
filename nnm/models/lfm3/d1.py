@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from nnm.layers.embedding import merge_placeholders
-from nnm.models.lfm3.language import Lfm3EmbeddingBackbone
+from nnm.models.lfm3.language import Lfm3EmbeddingModel
 from nnm.models.lfm3.omni import Lfm3OmniModel
 from nnm.models.lfm3.vision import Lfm3VisionProjector, Lfm3VisionTower
 from nnm.models.pretrained import PretrainedModel
@@ -51,7 +51,7 @@ class D1VlModel(PretrainedModel):
         self.d1_codes = getattr(config, "d1_codes", None)
         self.vision_tower = Lfm3VisionTower(config.vision_config)
         self.multi_modal_projector = Lfm3VisionProjector(config)
-        self.language_model = Lfm3EmbeddingBackbone(config.text_config)
+        self.language_model = Lfm3EmbeddingModel(config.text_config)
         self.lm_head = (
             None
             if self.tie_word_embeddings
