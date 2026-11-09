@@ -1,29 +1,8 @@
 import torch
 from torch import nn
 from nnm.layers.activation import get_activation
+from nnm.layers.conv import ConvNormAct
 from nnm.layers.se import SqueezeExcitationLayer
-
-
-class ConvLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, activation="hardswish", groups=1):
-        super().__init__()
-        self.conv = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=kernel_size // 2,
-            bias=False,
-            groups=groups,
-        )
-        self.normalization = nn.BatchNorm2d(out_channels)
-        self.act_fn = get_activation(activation) if activation is not None else nn.Identity()
-
-    def forward(self, input):
-        hidden_state = self.conv(input)
-        hidden_state = self.normalization(hidden_state)
-        hidden_state = self.act_fn(hidden_state)
-        return hidden_state
 
 
 class LearnableRepLayer(nn.Module):
@@ -32,11 +11,8 @@ class LearnableRepLayer(nn.Module):
         self.stride = stride
         self.bn = nn.BatchNorm2d(num_features=in_channels) if out_channels == in_channels and stride == 1 else None
         self.convs = nn.ModuleList(
-            [
-                ConvLayer(in_channels, out_channels, kernel_size, stride, groups=groups, activation=None)
-                for _ in range(num_branches)
-            ]
-            + ([ConvLayer(in_channels, out_channels, 1, stride, groups=groups, activation=None)] if kernel_size > 1 else [])
+            [ConvNormAct(in_channels, out_channels, kernel_size, stride, groups=groups, act=False) for _ in range(num_branches)]
+            + ([ConvNormAct(in_channels, out_channels, 1, stride, groups=groups, act=False)] if kernel_size > 1 else [])
         )
         self.scale = nn.Parameter(torch.tensor(1.0))
         self.bias = nn.Parameter(torch.tensor(0.0))
@@ -136,12 +112,12 @@ class LCNetV3Encoder(nn.Module):
             if hasattr(config, "out_indices") and config.out_indices
             else list(range(len(config.block_configs) + 1))
         )
-        self.conv = ConvLayer(
+        self.conv = ConvNormAct(
             in_channels=3,
             kernel_size=3,
             out_channels=make_divisible(config.stem_channels * config.scale, config.divisor),
             stride=config.stem_stride,
-            activation=None,
+            act=False,
         )
         self.blocks = nn.ModuleList([])
         for stage_index in range(len(config.block_configs)):

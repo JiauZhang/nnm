@@ -77,8 +77,8 @@ class JiT(PretrainedModel):
     def __init__(self, config):
         super().__init__()
         patch_size = config.get("patch_size", 16)
-        data_dim = config.get("data_dim", config.get("in_channels", 3))
-        bottleneck_dim = config.get("bottleneck_dim", config.get("dim"))
+        data_dim = config.get("in_channels", 3)
+        bottleneck_dim = config.bottleneck_dim
         self.patch_size = patch_size
         self.data_dim = data_dim
         patch_dim = patch_size * patch_size * data_dim

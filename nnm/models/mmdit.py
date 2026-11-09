@@ -105,18 +105,18 @@ class MMDiTBlock(nn.Module):
 class MMDiT(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        hidden_size = config.hidden_size
         patch_size = config.get("patch_size", 2)
         in_channels = config.get("in_channels", 4)
-        context_dim = config.get("context_dim", config.get("text_hidden_size", hidden_size))
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
+        context_dim = config.get("context_dim", hidden_size)
+        num_heads = config.num_attention_heads
+        num_layers = config.num_hidden_layers
         mlp_ratio = config.get("mlp_ratio", 4.0)
         qkv_bias = config.get("qkv_bias", True)
         o_bias = config.get("o_bias", True)
         qk_norm = config.get("qk_norm", False)
-        norm_eps = config.get("norm_eps", config.get("layer_norm_eps", 1e-6))
-        mlp_act = config.get("mlp_act", config.get("hidden_act", "gelu"))
+        norm_eps = config.get("layer_norm_eps", 1e-6)
+        mlp_act = config.get("hidden_act", "gelu")
         learn_sigma = config.get("learn_sigma", False)
         num_classes = config.get("num_classes", 0)
         image_size = config.get("image_size", 64)

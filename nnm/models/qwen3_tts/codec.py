@@ -1,13 +1,15 @@
 import math
+from functools import partial
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from nnm.layers.attention import RotarySelfAttention
-from nnm.layers.mlp import GatedMLP
+from nnm.layers.mlp import GatedMLP, MLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
+from nnm.layers.transformer import RotaryVisionBlock
 from nnm.layers.vit import LayerScale
 from nnm.layers.vq import ResidualVectorQuantization
 from nnm.models.pretrained import PretrainedModel
@@ -50,17 +52,14 @@ class ConvNeXtBlock(nn.Module):
         super().__init__()
         self.dwconv = CausalConv(dim, dim, kernel_size=7, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-6)
-        self.pwconv1 = nn.Linear(dim, 4 * dim)
-        self.act = nn.GELU()
-        self.pwconv2 = nn.Linear(4 * dim, dim)
-        self.gamma = nn.Parameter(1e-6 * torch.ones(dim))
+        self.mlp = MLP(dim, 4 * dim, activation="gelu", bias=True)
+        self.layer_scale = LayerScale(dim, 1e-6)
 
     def forward(self, hidden):
         residual = hidden
         hidden = self.dwconv(hidden).permute(0, 2, 1)
-        hidden = self.pwconv2(self.act(self.pwconv1(self.norm(hidden))))
-        hidden = self.gamma * hidden
-        return residual + hidden.permute(0, 2, 1)
+        hidden = self.layer_scale(self.mlp(self.norm(hidden))).permute(0, 2, 1)
+        return residual + hidden
 
 
 class SnakeBeta(nn.Module):
@@ -120,30 +119,24 @@ class CodecAttention(RotarySelfAttention):
         )
 
 
-class CodecLayer(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.self_attn = CodecAttention(config)
-        self.mlp = GatedMLP(config.hidden_size, config.intermediate_size)
-        self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.self_attn_layer_scale = LayerScale(config.hidden_size, config.layer_scale_initial_scale)
-        self.mlp_layer_scale = LayerScale(config.hidden_size, config.layer_scale_initial_scale)
-
-    def forward(self, hidden, rotary_embeddings):
-        residual = hidden
-        hidden = residual + self.self_attn_layer_scale(self.self_attn(self.input_layernorm(hidden), rotary_embeddings))
-        residual = hidden
-        return residual + self.mlp_layer_scale(self.mlp(self.post_attention_layernorm(hidden)))
-
-
 class CodecTransformer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.input_proj = nn.Linear(config.latent_dim, config.hidden_size)
         self.output_proj = nn.Linear(config.hidden_size, config.latent_dim)
-        self.layers = nn.ModuleList([CodecLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList(
+            [
+                RotaryVisionBlock(
+                    config.hidden_size,
+                    CodecAttention(config),
+                    GatedMLP(config.hidden_size, config.intermediate_size),
+                    norm_layer=partial(RMSNorm, eps=config.rms_norm_eps),
+                    layerscale_init=config.layer_scale_initial_scale,
+                )
+                for _ in range(config.num_hidden_layers)
+            ]
+        )
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.rotary_emb = RoPE(rotary_inv_freq(head_dim, config.rope_theta))

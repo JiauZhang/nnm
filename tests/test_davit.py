@@ -7,8 +7,8 @@ from nnm.models.davit import DaViT
 def tiny_config():
     return Config(
         image_size=64,
-        in_channels=3,
-        embed_dim=[16, 32],
+        num_channels=3,
+        embed_dims=[16, 32],
         depths=[1, 1],
         num_heads=[1, 2],
         num_groups=[1, 2],

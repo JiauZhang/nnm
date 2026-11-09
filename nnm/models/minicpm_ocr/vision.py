@@ -6,6 +6,7 @@ from torch import nn
 from nnm.layers.attention import SelfAttention
 from nnm.layers.mlp import MLP
 from nnm.layers.transformer import VisionBlock
+from nnm.layers.vit import PatchEmbed2D
 
 
 def vision_cu_seqlens(target_sizes):
@@ -94,11 +95,13 @@ class VisionEmbeddings(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.num_patches_per_side = image_size // patch_size
-        self.patch_embedding = nn.Conv2d(num_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
+        self.patch_embedding = PatchEmbed2D(
+            kernel_size=patch_size, in_channels=num_channels, embed_dim=hidden_size, bias=True, norm=False
+        )
         self.position_embedding = nn.Embedding(self.num_patches_per_side**2, hidden_size)
 
     def forward(self, pixel_values, target_sizes):
-        embeddings = self.patch_embedding(pixel_values).flatten(2).transpose(1, 2)
+        embeddings, _ = self.patch_embedding(pixel_values)
         positions = nearest_position_ids(target_sizes, self.num_patches_per_side)
         return embeddings + self.position_embedding(positions).unsqueeze(0)
 

@@ -1,11 +1,10 @@
 import torch
 
+from nnm.models.navit import NaViTPreprocessor, Siglip2NaViT
 from nnm.models.pretrained import PretrainedModel
+from nnm.models.qwen3 import Qwen3ForCausalLM
 
-from .preprocess import NaViTPreprocessor
-from .qwen3 import Qwen3ForCausalLM
 from .visual import OXRVisualTokenizer, VisualVocabularyEmbedding
-from .vit import Siglip2NaViT
 
 VISUAL_ATOM_ID = -300
 INDICATOR_IDS = (-301, -302, -303, -304)

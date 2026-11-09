@@ -14,8 +14,8 @@ def _reference_model():
 
 def tiny_config():
     return Config(
-        in_chans=3,
-        layers=[2, 2],
+        num_channels=3,
+        depths=[2, 2],
         embed_dims=[16, 32],
         token_mixers=["repmixer", "repmixer"],
         mlp_ratios=[4.0, 4.0],

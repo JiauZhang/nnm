@@ -8,6 +8,7 @@ from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE2D
+from nnm.layers.vit import merge_position_ids
 
 
 def vision_inv_freq(config):
@@ -16,19 +17,6 @@ def vision_inv_freq(config):
     base = config.rope_parameters["rope_theta"]
     inv_freq = 1.0 / (base ** (torch.arange(0, spatial_dim, 2, dtype=torch.float) / spatial_dim))
     return [inv_freq, inv_freq.clone()]
-
-
-def vision_position_ids(grid_thw, spatial_merge_size):
-    device = grid_thw.device
-    positions = []
-    for frames, height, width in grid_thw.tolist():
-        height_ids = torch.arange(height, device=device).view(height, 1).expand(height, width)
-        width_ids = torch.arange(width, device=device).view(1, width).expand(height, width)
-        block = (height // spatial_merge_size, spatial_merge_size, width // spatial_merge_size, spatial_merge_size)
-        height_ids = height_ids.reshape(block).transpose(1, 2).flatten()
-        width_ids = width_ids.reshape(block).transpose(1, 2).flatten()
-        positions.append(torch.stack([height_ids, width_ids], dim=-1).repeat(frames, 1))
-    return torch.cat(positions, dim=0)
 
 
 def vision_frame_shapes(grid_thw):
@@ -131,7 +119,7 @@ class Lfm3VisionTower(nn.Module):
         frame_shapes = vision_frame_shapes(grid_thw)
         lengths = [height * width for height, width in frame_shapes]
         hidden = self.embedding_norm(self.patchifier(pixel_values))
-        cos, sin = self.rotary(vision_position_ids(grid_thw, self.spatial_merge_size))
+        cos, sin = self.rotary(merge_position_ids(grid_thw, self.spatial_merge_size))
         for layer in self.layers:
             hidden = layer(hidden, lengths, frame_shapes, cos, sin)
         return hidden
@@ -166,7 +154,7 @@ class Lfm3VlVisionModel(nn.Module):
         self.layers = nn.ModuleList([Lfm3VisionLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)])
 
     def forward(self, pixel_values, grid_thw):
-        positions = vision_position_ids(grid_thw, self.spatial_merge_size)
+        positions = merge_position_ids(grid_thw, self.spatial_merge_size)
         cu_seqlens = vision_cu_seqlens(grid_thw)
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
         frame_shapes = vision_frame_shapes(grid_thw)
@@ -176,7 +164,3 @@ class Lfm3VlVisionModel(nn.Module):
         for layer in self.layers:
             hidden_states = layer(hidden_states, lengths, frame_shapes, cos, sin)
         return hidden_states
-
-
-class Lfm3VlMultiModalProjector(Lfm3VisionProjector):
-    pass

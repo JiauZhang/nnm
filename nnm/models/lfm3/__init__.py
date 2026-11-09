@@ -5,11 +5,9 @@ from nnm.models.lfm3.omni import Lfm3OmniModel
 from nnm.models.lfm3.vision import (
     Lfm3VisionProjector,
     Lfm3VisionTower,
-    Lfm3VlMultiModalProjector,
     Lfm3VlVisionModel,
     vision_cu_seqlens,
     vision_frame_shapes,
-    vision_position_ids,
 )
 from nnm.models.lfm3.vl import Lfm3VlModel
 
@@ -24,11 +22,9 @@ __all__ = [
     "Lfm3VisionProjector",
     "Lfm3VisionTower",
     "Lfm3VlModel",
-    "Lfm3VlMultiModalProjector",
     "Lfm3VlVisionModel",
     "vision_cu_seqlens",
     "vision_frame_shapes",
-    "vision_position_ids",
     "pointer_probs",
     "position_logits",
     "state_attention_mask",

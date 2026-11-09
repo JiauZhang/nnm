@@ -14,7 +14,7 @@ from nnm.models.pretrained import PretrainedModel
 def _ffn(config, hidden_size):
     ffn_layer = config.get("ffn_layer", "mlp")
     ratio = config.get("ffn_ratio", 4.0)
-    bias = config.get("ffn_bias", config.get("mlp_bias", True))
+    bias = config.get("ffn_bias", True)
     intermediate = config.get("intermediate_size")
     if ffn_layer != "mlp" or config.get("use_gated_mlp", False):
         align_to = int(ffn_layer.removeprefix("swiglu") or 8)
@@ -27,19 +27,19 @@ def _ffn(config, hidden_size):
 class PerceptionEncoderVision(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("embed_dim", config.get("hidden_size"))
-        num_heads = config.get("num_heads", config.get("num_attention_heads"))
-        num_layers = config.get("depth", config.get("num_hidden_layers"))
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
+        num_layers = config.num_hidden_layers
         head_dim = hidden_size // num_heads
         patch_size = config.get("patch_size", 14)
-        norm_eps = config.get("norm_eps", config.get("layer_norm_eps", 1e-6))
-        layerscale_init = config.get("layerscale_init", config.get("layerscale_value", 1e-5))
-        num_storage_tokens = config.get("n_storage_tokens", config.get("num_register_tokens", 0))
+        norm_eps = config.get("layer_norm_eps", 1e-6)
+        layerscale_init = config.get("layerscale_init", 1e-5)
+        num_storage_tokens = config.get("num_register_tokens", 0)
         self.num_storage_tokens = num_storage_tokens
         self.use_cls_token = config.get("use_cls_token", True)
         self.patch_embed = PatchEmbed2D(
             kernel_size=patch_size,
-            in_channels=config.get("in_chans", config.get("num_channels", 3)),
+            in_channels=config.get("num_channels", 3),
             embed_dim=hidden_size,
             bias=True,
             norm=False,
@@ -50,7 +50,7 @@ class PerceptionEncoderVision(nn.Module):
         self.rope_embed = RopePositionEmbedding(
             hidden_size,
             num_heads,
-            base=config.get("pos_embed_rope_base", config.get("rope_theta", 100.0)),
+            base=config.get("rope_theta", 100.0),
             min_period=config.get("pos_embed_rope_min_period"),
             max_period=config.get("pos_embed_rope_max_period"),
             normalize_coords=config.get("pos_embed_rope_normalize_coords", "separate"),
@@ -113,18 +113,14 @@ class PerceptionEncoderVision(nn.Module):
 class PerceptionEncoderText(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get(
-            "text_hidden_size", config.get("text_embed_dim", config.get("embed_dim", config.get("hidden_size")))
-        )
-        num_heads = config.get(
-            "text_num_heads", config.get("text_num_attention_heads", config.get("num_heads", config.get("num_attention_heads")))
-        )
-        num_layers = config.get("text_depth", config.get("text_num_hidden_layers", 12))
+        hidden_size = config.text_hidden_size
+        num_heads = config.text_num_attention_heads
+        num_layers = config.get("text_num_hidden_layers", 12)
         intermediate_size = config.get("text_intermediate_size", hidden_size * 4)
-        norm_eps = config.get("norm_eps", config.get("layer_norm_eps", 1e-6))
+        norm_eps = config.get("layer_norm_eps", 1e-6)
         head_dim = hidden_size // num_heads
         self.rotary = RoPE(rotary_inv_freq(head_dim, config.get("text_rope_base", 10000.0)))
-        self.token_embedding = nn.Embedding(config.get("text_vocab_size", config.get("vocab_size", 32000)), hidden_size)
+        self.token_embedding = nn.Embedding(config.get("text_vocab_size", 32000), hidden_size)
         self.layers = nn.ModuleList(
             [
                 TransformerBlock(

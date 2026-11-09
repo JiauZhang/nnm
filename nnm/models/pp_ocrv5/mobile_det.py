@@ -1,8 +1,7 @@
-import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from nnm.layers.activation import get_activation
+from nnm.layers.conv import ConvNormAct
 from nnm.layers.se import SqueezeExcitation
 from .pp_lcnet_v3 import LCNetV3Encoder
 from conippets.config import Config
@@ -71,59 +70,26 @@ class Neck(nn.Module):
         return fused_feature_map
 
 
-class ConvBatchnormLayer(nn.Module):
-    def __init__(
-        self,
-        in_channels,
-        out_channels,
-        kernel_size,
-        stride=1,
-        padding=1,
-        groups=1,
-        activation="relu",
-        bias=False,
-        conv_transpose=False,
-    ):
-        super().__init__()
-        if conv_transpose:
-            self.conv = nn.ConvTranspose2d(
-                in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride
-            )
-        else:
-            self.conv = nn.Conv2d(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                kernel_size=kernel_size,
-                stride=stride,
-                padding=padding,
-                groups=groups,
-                bias=bias,
-            )
-
-        self.norm = nn.BatchNorm2d(out_channels)
-        self.act_fn = get_activation(activation) if activation is not None else nn.Identity()
-
-    def forward(self, hidden_states):
-        hidden_states = self.conv(hidden_states)
-        hidden_states = self.norm(hidden_states)
-        hidden_states = self.act_fn(hidden_states)
-        return hidden_states
-
-
 class Head(nn.Module):
     def __init__(self, config):
         super().__init__()
 
         in_channels = config.neck_out_channels
         kernel_list = config.kernel_list
-        self.conv_down = ConvBatchnormLayer(
-            in_channels=in_channels, out_channels=in_channels // 4, kernel_size=kernel_list[0], padding=int(kernel_list[0] // 2)
+        self.conv_down = ConvNormAct(
+            in_channels=in_channels,
+            out_channels=in_channels // 4,
+            kernel_size=kernel_list[0],
+            padding=int(kernel_list[0] // 2),
+            activation="relu",
         )
-        self.conv_up = ConvBatchnormLayer(
+        self.conv_up = ConvNormAct(
             in_channels=in_channels // 4,
             out_channels=in_channels // 4,
             kernel_size=kernel_list[1],
             stride=2,
+            padding=0,
+            activation="relu",
             conv_transpose=True,
         )
 
@@ -200,26 +166,3 @@ class PPOCRv5MobileDetectionModel(nn.Module):
         logits = self.head(hidden_states)
 
         return logits
-
-    def load_hf_state_dict(self, hf_state_dict):
-        REPLACEMENTS = [
-            (r"^model\.backbone\.encoder\.", "model.backbone."),
-            (r"\.convolution\.convolution(\.|$)", r".conv.conv\1"),
-            (r"\.depthwise_convolution\.", ".dw_conv."),
-            (r"\.pointwise_convolution\.", ".pw_conv."),
-            (r"\.convolution(\.|$)", r".conv\1"),
-            (r"\.conv_small_symmetric(\.|$)", ".convs.4."),
-            (r"\.conv_symmetric\.(\d+)(\.|$)", r".convs.\1."),
-            (r"\.act\.lab\.", ".act_"),
-            (r"\.lab\.", "."),
-            (r"\.squeeze_excitation_module\.", ".se."),
-            (r"\.se\.convolutions\.", ".se.convs."),
-            (r"\.identity\.", ".bn."),
-        ]
-        converted = {}
-        for key, value in hf_state_dict.items():
-            new_key = key
-            for pattern, repl in REPLACEMENTS:
-                new_key = re.sub(pattern, repl, new_key)
-            converted[new_key] = value
-        self.load_state_dict(converted)

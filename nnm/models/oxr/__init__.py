@@ -1,8 +1,8 @@
+from nnm.models.navit import NaViTPreprocessor, Siglip2NaViT, smart_resize
+from nnm.models.qwen3 import Qwen3ForCausalLM, Qwen3Model
+
 from .model import INDICATOR_IDS, VISUAL_ATOM_ID, OXR
-from .preprocess import NaViTPreprocessor, smart_resize
-from .qwen3 import Qwen3Model, Qwen3ForCausalLM
 from .visual import OXRVisualTokenizer, VisualVocabularyEmbedding, VisualVocabularyHead
-from .vit import Siglip2NaViT
 
 __all__ = [
     "INDICATOR_IDS",

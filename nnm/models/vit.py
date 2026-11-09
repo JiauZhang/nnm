@@ -1,19 +1,18 @@
 import torch
 from functools import partial
 from torch import nn
-from torch.nn import functional as F
 
 from nnm.layers.attention import SelfAttention
 from nnm.layers.mlp import MLP
 from nnm.layers.transformer import VisionBlock
-from nnm.layers.vit import PatchEmbed2D
+from nnm.layers.vit import PatchEmbed2D, resize_abs_pos
 from nnm.models.pretrained import PretrainedModel
 
 
 class ViTEmbeddings(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        hidden_size = config.hidden_size
         image_size = config.get("image_size", 224)
         patch_size = config.get("patch_size", 16)
         num_channels = config.get("num_channels", 3)
@@ -40,21 +39,20 @@ class ViTEmbeddings(nn.Module):
     def _interpolate_positions(self, height, width):
         grid_height = grid_width = int((self.position_embeddings.shape[1] - 1) ** 0.5)
         cls_position = self.position_embeddings[:, :1]
-        patch_positions = self.position_embeddings[:, 1:].reshape(1, grid_height, grid_width, -1).permute(0, 3, 1, 2)
-        patch_positions = F.interpolate(patch_positions, size=(height, width), mode="bicubic", align_corners=False)
-        patch_positions = patch_positions.permute(0, 2, 3, 1).reshape(1, height * width, -1)
-        return torch.cat([cls_position, patch_positions], dim=1)
+        patch_positions = self.position_embeddings[:, 1:].reshape(1, grid_height, grid_width, -1)
+        patch_positions = resize_abs_pos(patch_positions, (height, width), antialias=False)
+        return torch.cat([cls_position, patch_positions.reshape(1, height * width, -1)], dim=1)
 
 
 class ViT(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_layers = config.get("num_hidden_layers", config.get("depth", 12))
-        num_heads = config.get("num_attention_heads", config.get("num_heads", 12))
+        hidden_size = config.hidden_size
+        num_layers = config.get("num_hidden_layers", 12)
+        num_heads = config.get("num_attention_heads", 12)
         intermediate_size = config.get("intermediate_size", hidden_size * 4)
         layer_norm_eps = config.get("layer_norm_eps", 1e-12)
-        activation = config.get("hidden_act", config.get("activation", "gelu"))
+        activation = config.get("hidden_act", "gelu")
         num_labels = config.get("num_labels", 0)
 
         self.embeddings = ViTEmbeddings(config)

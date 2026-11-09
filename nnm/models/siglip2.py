@@ -1,12 +1,11 @@
 import torch
 from functools import partial
 from torch import nn
-from torch.nn import functional as F
 
 from nnm.layers.attention import SelfAttention
 from nnm.layers.mlp import MLP
 from nnm.layers.transformer import TransformerBlock, VisionBlock
-from nnm.layers.vit import AttentionPool, PatchEmbed2D
+from nnm.layers.vit import AttentionPool, PatchEmbed2D, resize_abs_pos
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -15,10 +14,8 @@ class SigLIP2VisionEmbeddings(nn.Module):
         super().__init__()
         image_size = config.get("image_size", 224)
         patch_size = config.get("patch_size", 16)
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_positions = config.get(
-            "num_positions", config.get("num_patches", config.get("max_num_patches", (image_size // patch_size) ** 2))
-        )
+        hidden_size = config.hidden_size
+        num_positions = config.get("num_positions", (image_size // patch_size) ** 2)
         self.patch_size = patch_size
         self.num_positions = num_positions
         self.patch_embedding = PatchEmbed2D(
@@ -35,16 +32,15 @@ class SigLIP2VisionEmbeddings(nn.Module):
         position = self.position_embedding.weight[None]
         if height * width != self.num_positions:
             grid = int(self.num_positions**0.5)
-            position = position.reshape(1, grid, grid, -1).permute(0, 3, 1, 2)
-            position = F.interpolate(position, size=(height, width), mode="bilinear", align_corners=False, antialias=True)
-            position = position.permute(0, 2, 3, 1).reshape(1, height * width, -1)
+            position = resize_abs_pos(position.reshape(1, grid, grid, -1), (height, width), mode="bilinear", antialias=True)
+            position = position.reshape(1, height * width, -1)
         return hidden + position[:, : height * width]
 
 
 class SigLIP2TextEmbeddings(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        hidden_size = config.hidden_size
         vocab_size = config.get("vocab_size", 32000)
         max_positions = config.get("max_position_embeddings", 64)
         self.token_embedding = nn.Embedding(vocab_size, hidden_size)
@@ -58,12 +54,12 @@ class SigLIP2TextEmbeddings(nn.Module):
 class SigLIP2TextEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
         intermediate_size = config.get("intermediate_size", hidden_size * 4)
-        norm_eps = config.get("layer_norm_eps", config.get("norm_eps", 1e-6))
+        norm_eps = config.get("layer_norm_eps", 1e-6)
         activation = config.get("hidden_act", "gelu_pytorch_tanh")
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
+        num_layers = config.num_hidden_layers
         self.layers = nn.ModuleList(
             [
                 TransformerBlock(
@@ -92,11 +88,11 @@ class SigLIP2TextEncoder(nn.Module):
 class SigLIP2VisionModel(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
+        num_layers = config.num_hidden_layers
         intermediate_size = config.get("intermediate_size", hidden_size * 4)
-        norm_eps = config.get("layer_norm_eps", config.get("norm_eps", 1e-6))
+        norm_eps = config.get("layer_norm_eps", 1e-6)
         activation = config.get("hidden_act", "gelu_pytorch_tanh")
         self.embeddings = SigLIP2VisionEmbeddings(config)
         self.encoder = nn.ModuleList(
@@ -133,10 +129,10 @@ class SigLIP2VisionModel(nn.Module):
 class SigLIP2TextModel(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        hidden_size = config.hidden_size
         self.embeddings = SigLIP2TextEmbeddings(config)
         self.encoder = SigLIP2TextEncoder(config)
-        self.final_layer_norm = nn.LayerNorm(hidden_size, eps=config.get("layer_norm_eps", config.get("norm_eps", 1e-6)))
+        self.final_layer_norm = nn.LayerNorm(hidden_size, eps=config.get("layer_norm_eps", 1e-6))
         self.head = nn.Linear(hidden_size, config.get("projection_size", hidden_size), bias=True)
 
     def forward(self, input_ids, attention_mask=None):

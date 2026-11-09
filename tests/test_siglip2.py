@@ -45,6 +45,7 @@ def test_vision_matches_transformers():
         image_size=32,
         patch_size=8,
         num_patches=256,
+        num_positions=256,
         layer_norm_eps=1e-6,
         hidden_act="gelu_pytorch_tanh",
         vision_use_head=True,

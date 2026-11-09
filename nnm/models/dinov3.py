@@ -13,7 +13,7 @@ from nnm.models.pretrained import PretrainedModel
 def build_block_ffn(config, hidden_size):
     ffn_layer = config.get("ffn_layer", "mlp")
     ratio = config.get("ffn_ratio", 4.0)
-    bias = config.get("ffn_bias", config.get("mlp_bias", True))
+    bias = config.get("ffn_bias", True)
     intermediate = config.get("intermediate_size")
     if ffn_layer != "mlp" or config.get("use_gated_mlp", False):
         align_to = int(ffn_layer.removeprefix("swiglu") or 8)
@@ -41,7 +41,7 @@ def build_block(config, hidden_size, num_heads, head_dim, layerscale_init, drop_
         hidden_size,
         attention,
         build_block_ffn(config, hidden_size),
-        norm_layer=partial(nn.LayerNorm, eps=config.get("norm_eps", config.get("layer_norm_eps", 1e-6))),
+        norm_layer=partial(nn.LayerNorm, eps=config.get("layer_norm_eps", 1e-6)),
         layerscale_init=layerscale_init,
         drop_path_rate=drop_path_rate,
     )
@@ -50,19 +50,19 @@ def build_block(config, hidden_size, num_heads, head_dim, layerscale_init, drop_
 class DINOv3(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
+        num_layers = config.num_hidden_layers
         head_dim = hidden_size // num_heads
         patch_size = config.get("patch_size", 16)
-        num_register_tokens = config.get("num_register_tokens", config.get("n_storage_tokens", 0))
-        norm_eps = config.get("norm_eps", config.get("layer_norm_eps", 1e-6))
-        layerscale_init = config.get("layerscale_init", config.get("layerscale_value", 1e-5))
+        num_register_tokens = config.get("num_register_tokens", 0)
+        norm_eps = config.get("layer_norm_eps", 1e-6)
+        layerscale_init = config.get("layerscale_init", 1e-5)
         drop_path_rate = config.get("drop_path_rate", 0.0)
         self.num_register_tokens = num_register_tokens
         self.patch_embed = PatchEmbed2D(
             kernel_size=patch_size,
-            in_channels=config.get("in_chans", config.get("num_channels", 3)),
+            in_channels=config.get("num_channels", 3),
             embed_dim=hidden_size,
             bias=True,
             norm=False,
@@ -73,7 +73,7 @@ class DINOv3(PretrainedModel):
         self.rope_embed = RopePositionEmbedding(
             hidden_size,
             num_heads,
-            base=config.get("pos_embed_rope_base", config.get("rope_theta", 100.0)),
+            base=config.get("rope_theta", 100.0),
             min_period=config.get("pos_embed_rope_min_period"),
             max_period=config.get("pos_embed_rope_max_period"),
             normalize_coords=config.get("pos_embed_rope_normalize_coords", "separate"),

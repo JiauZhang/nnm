@@ -107,17 +107,17 @@ class Florence2(PretrainedModel):
         super().__init__()
         vision_config = config.get("vision_config")
         text_config = config.get("text_config")
-        vision_dim = vision_config.get("embed_dim", vision_config.get("hidden_size", 96))
+        vision_dim = vision_config.get("embed_dim", 96)
         if isinstance(vision_dim, (list, tuple)):
             vision_dim = vision_dim[-1]
         projection_dim = vision_config.get("projection_dim", 1024)
-        hidden_size = text_config.get("hidden_size", text_config.get("d_model", 768))
+        hidden_size = text_config.get("hidden_size", 768)
         num_heads = text_config.get("num_attention_heads", 12)
-        intermediate_size = text_config.get("intermediate_size", text_config.get("encoder_ffn_dim", hidden_size * 4))
-        norm_eps = text_config.get("layer_norm_eps", text_config.get("norm_eps", 1e-5))
+        intermediate_size = text_config.get("intermediate_size", hidden_size * 4)
+        norm_eps = text_config.get("layer_norm_eps", 1e-5)
         vocab_size = text_config.get("vocab_size", 51200)
         max_positions = text_config.get("max_position_embeddings", 1024)
-        encoder_layers = text_config.get("encoder_layers", text_config.get("num_hidden_layers", 12))
+        encoder_layers = text_config.get("num_hidden_layers", 12)
         decoder_layers = text_config.get("decoder_layers", 12)
         self.image_token_id = config.get("image_token_id", 0)
         self.hidden_size = hidden_size

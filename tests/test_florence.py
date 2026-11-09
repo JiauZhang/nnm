@@ -14,6 +14,7 @@ def test_davit_matches_transformers():
         patch_padding=[3, 1],
         patch_prenorm=[False, True],
         embed_dim=[8, 16],
+        embed_dims=[8, 16],
         num_heads=[1, 2],
         num_groups=[1, 2],
         window_size=7,
@@ -38,7 +39,9 @@ def tiny_config():
         vision_config=dict(
             image_size=32,
             in_channels=3,
+            num_channels=3,
             embed_dim=[8, 16],
+            embed_dims=[8, 16],
             depths=[1, 1],
             num_heads=[1, 2],
             num_groups=[1, 2],

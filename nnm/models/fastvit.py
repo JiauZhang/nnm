@@ -226,9 +226,9 @@ class FastViTStage(nn.Module):
 class FastViT(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        in_chans = config.get("in_chans", config.get("num_channels", 3))
-        layers = config.get("layers", config.get("depths", [2, 2, 6, 2]))
-        embed_dims = config.get("embed_dims", config.get("dims", [64, 128, 256, 512]))
+        in_chans = config.get("num_channels", 3)
+        layers = config.get("depths", [2, 2, 6, 2])
+        embed_dims = config.get("embed_dims", [64, 128, 256, 512])
         token_mixers = config.get("token_mixers", ["repmixer"] * len(layers))
         mlp_ratios = config.get("mlp_ratios", [4.0] * len(layers))
         downsamples = config.get("downsamples", [False] + [True] * (len(layers) - 1))

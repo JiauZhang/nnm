@@ -19,10 +19,10 @@ class BitwiseClassifier(nn.Module):
 class Infinity(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        hidden_size = config.hidden_size
         feature_dim = config.get("feature_dim", hidden_size)
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
+        num_heads = config.num_attention_heads
+        num_layers = config.num_hidden_layers
         num_classes = config.get("num_classes", 1000)
         num_scales = config.get("num_scales", 10)
         intermediate_size = config.get("intermediate_size", hidden_size * 4)

@@ -2,7 +2,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nnm.layers.activation import get_activation
 from nnm.layers.norm import LayerNorm2d
+from nnm.layers.vit import LayerScale
 
 
 class CXBlock(nn.Module):
@@ -13,24 +15,38 @@ class CXBlock(nn.Module):
         self.pwconv1 = nn.Linear(dim, 4 * dim)
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(4 * dim, dim)
-        self.gamma = nn.Parameter(layer_scale_init_value * torch.ones(dim)) if layer_scale_init_value > 0 else None
+        self.layer_scale = LayerScale(dim, layer_scale_init_value, spatial=True) if layer_scale_init_value else nn.Identity()
 
     def forward(self, hidden):
         residual = hidden
         hidden = self.dwconv(hidden)
         hidden = self.norm(hidden).permute(0, 2, 3, 1)
         hidden = self.pwconv2(self.act(self.pwconv1(hidden)))
-        if self.gamma is not None:
-            hidden = hidden * self.gamma
-        return residual + hidden.permute(0, 3, 1, 2)
+        hidden = self.layer_scale(hidden.permute(0, 3, 1, 2))
+        return residual + hidden
 
 
 class ConvNormAct(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, groups=1, act=True):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        groups=1,
+        act=True,
+        *,
+        padding=None,
+        bias=False,
+        activation="gelu",
+        conv_transpose=False,
+    ):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, kernel_size // 2, groups=groups, bias=False)
+        padding = kernel_size // 2 if padding is None else padding
+        conv = nn.ConvTranspose2d if conv_transpose else nn.Conv2d
+        self.conv = conv(in_channels, out_channels, kernel_size, stride, padding, groups=groups, bias=bias)
         self.bn = nn.BatchNorm2d(out_channels)
-        self.act = nn.GELU() if act else nn.Identity()
+        self.act = get_activation(activation) if act else nn.Identity()
 
     def forward(self, hidden):
         return self.act(self.bn(self.conv(hidden)))

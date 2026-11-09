@@ -6,7 +6,7 @@ from safetensors.torch import load_file
 from torch import nn
 from transformers import ModernBertConfig, ModernBertModel
 
-from nnm.models.laya.model import Laya
+from nnm.models.laya import Laya
 
 
 @pytest.fixture(scope="module")

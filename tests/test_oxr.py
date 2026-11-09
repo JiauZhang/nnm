@@ -2,9 +2,9 @@ import pytest
 import torch
 
 from conippets.config import Config
+from nnm.models.navit import Siglip2NaViT
 from nnm.models.oxr import OXR
-from nnm.models.oxr.qwen3 import Qwen3ForCausalLM
-from nnm.models.oxr.vit import Siglip2NaViT
+from nnm.models.qwen3 import Qwen3ForCausalLM
 
 
 def vit_config():

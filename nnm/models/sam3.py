@@ -5,6 +5,7 @@ from functools import partial
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torchvision.ops import box_convert, roi_align
 
 from nnm.layers.attention import (
     CrossAttention,
@@ -16,9 +17,10 @@ from nnm.layers.attention import (
 from nnm.layers.conv import CXBlock
 from nnm.layers.mlp import MLP
 from nnm.layers.norm import LayerNorm2d
-from nnm.layers.sinusoidal import sinusoidal_embedding
 from nnm.layers.rope import axial_rope_cos_sin
+from nnm.layers.sinusoidal import sinusoidal_embedding
 from nnm.layers.transformer import CrossTransformerBlock, RotaryVisionBlock, TransformerBlock
+from nnm.models.detr import DetrSinePositionEmbedding, inverse_sigmoid
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -32,26 +34,7 @@ def _mlp_head(input_size, hidden_size, output_size, num_layers=2):
     return nn.Sequential(*layers)
 
 
-def box_cxcywh_to_xyxy(boxes):
-    x_c, y_c, w, h = boxes.unbind(-1)
-    return torch.stack([x_c - 0.5 * w, y_c - 0.5 * h, x_c + 0.5 * w, y_c + 0.5 * h], dim=-1)
-
-
-def inverse_sigmoid(x, eps=1e-5):
-    x = x.clamp(min=0, max=1)
-    return torch.log(x.clamp(min=eps) / (1 - x).clamp(min=eps))
-
-
-class Sam3SinePositionEmbedding(nn.Module):
-    def __init__(self, num_pos_feats=64, temperature=10000, normalize=False, scale=None):
-        super().__init__()
-        if scale is not None and not normalize:
-            raise ValueError("normalize should be True if scale is passed")
-        self.num_pos_feats = num_pos_feats
-        self.temperature = temperature
-        self.normalize = normalize
-        self.scale = 2 * math.pi if scale is None else scale
-
+class Sam3SinePositionEmbedding(DetrSinePositionEmbedding):
     def encode_1d_positions(self, x, y):
         embeddings = []
         for coordinate in (y, x):
@@ -59,51 +42,16 @@ class Sam3SinePositionEmbedding(nn.Module):
             embeddings.append(embedding)
         return embeddings[1], embeddings[0]
 
-    def encode_boxes(self, boxes):
-        dim_t = self.temperature ** (
-            2
-            * torch.div(torch.arange(self.num_pos_feats, dtype=torch.int64, device=boxes.device), 2, rounding_mode="floor")
-            / self.num_pos_feats
-        )
-        embeddings = []
-        for index in range(4):
-            angle = boxes[..., index, None] * self.scale / dim_t
-            embeddings.append(torch.stack((angle[..., 0::2].sin(), angle[..., 1::2].cos()), dim=-1).flatten(-2))
-        y, x, w, h = embeddings
-        return torch.cat((y, x, w, h), dim=-1)
-
-    def forward(self, shape, device, dtype, mask=None):
-        height, width = shape[-2:]
-        if mask is None:
-            mask = torch.zeros((1, height, width), device=device, dtype=torch.bool)
-        not_mask = (~mask).to(dtype)
-        y_embed = not_mask.cumsum(1)
-        x_embed = not_mask.cumsum(2)
-        eps = 1e-6
-        if self.normalize:
-            y_embed = y_embed / (y_embed[:, -1:, :] + eps) * self.scale
-            x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale
-        dim_t = self.temperature ** (
-            2
-            * torch.div(torch.arange(self.num_pos_feats, dtype=torch.int64, device=device), 2, rounding_mode="floor")
-            / self.num_pos_feats
-        )
-        pos_x = x_embed[..., None] / dim_t
-        pos_y = y_embed[..., None] / dim_t
-        pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
-        pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
-        return torch.cat((pos_y, pos_x), dim=-1).permute(0, 3, 1, 2)
-
 
 class Sam3VisionLayer(nn.Module):
     def __init__(self, config, window_size=0):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
         image_size = config.get("image_size", 1008)
         patch_size = config.get("patch_size", 14)
         grid = image_size // patch_size
-        norm_eps = config.get("layer_norm_eps", config.get("norm_eps", 1e-5))
+        norm_eps = config.get("layer_norm_eps", 1e-5)
         global_window = config.get("window_size", 24)
         dropout = config.get("hidden_dropout", 0.0)
         self.window_size = window_size
@@ -121,7 +69,7 @@ class Sam3VisionLayer(nn.Module):
             ),
             MLP(
                 hidden_size,
-                config.get("intermediate_size", int(hidden_size * config.get("mlp_ratio", 4.625))),
+                config.get("intermediate_size", int(hidden_size * 4.625)),
                 config.get("hidden_act", "gelu"),
                 bias=True,
                 dropout=dropout,
@@ -179,11 +127,11 @@ class Sam3VisionEmbeddings(nn.Module):
         self.pretrain_use_cls_token = config.get("pretrain_use_cls_token", True)
         self.tile_abs_pos = config.get("tile_abs_pos", True)
         self.use_abs_pos = config.get("use_abs_pos", True)
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        hidden_size = config.hidden_size
         pretrain_image_size = config.get("pretrain_image_size", 336)
         num_patches = (pretrain_image_size // patch_size) ** 2
         self.projection = nn.Conv2d(
-            config.get("num_channels", config.get("in_chans", 3)),
+            config.get("num_channels", 3),
             hidden_size,
             kernel_size=patch_size,
             stride=patch_size,
@@ -218,9 +166,9 @@ class Sam3ViT(nn.Module):
         super().__init__()
         window_size = config.get("window_size", 24)
         global_indexes = config.get("global_attn_indexes", [7, 15, 23, 31])
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
-        norm_eps = config.get("layer_norm_eps", config.get("norm_eps", 1e-5))
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        num_layers = config.num_hidden_layers
+        norm_eps = config.get("layer_norm_eps", 1e-5)
+        hidden_size = config.hidden_size
         self.embeddings = Sam3VisionEmbeddings(config)
         self.retain_cls_token = self.embeddings.retain_cls_token
         self.ln_pre = nn.LayerNorm(hidden_size, eps=norm_eps) if config.get("ln_pre", True) else nn.Identity()
@@ -371,12 +319,12 @@ class Sam3GeometryEncoder(nn.Module):
         return embeddings + self.label_embed(labels.long())
 
     def _encode_boxes(self, boxes, labels, vision):
-        from torchvision.ops import roi_align  # noqa: PLC0415
-
         batch, num_boxes = boxes.shape[:2]
         height, width = vision.shape[-2:]
         embeddings = self.boxes_direct_project(boxes)
-        xyxy = box_cxcywh_to_xyxy(boxes) * torch.tensor([width, height, width, height], dtype=boxes.dtype, device=boxes.device)
+        xyxy = box_convert(boxes, "cxcywh", "xyxy") * torch.tensor(
+            [width, height, width, height], dtype=boxes.dtype, device=boxes.device
+        )
         sampled = roi_align(vision, xyxy.unbind(0), self.roi_size)
         pooled = self.boxes_pool_project(sampled).view(batch, num_boxes, -1)
         embeddings = embeddings + pooled
@@ -541,7 +489,7 @@ class Sam3DetrDecoder(nn.Module):
         self.position_encoding = Sam3SinePositionEmbedding(num_pos_feats=hidden_size // 2, normalize=False)
 
     def _relative_position_bias(self, boxes, height, width):
-        xyxy = box_cxcywh_to_xyxy(boxes)
+        xyxy = box_convert(boxes, "cxcywh", "xyxy")
         batch, num_queries, _ = xyxy.shape
         coords_h = torch.arange(height, dtype=boxes.dtype, device=boxes.device) / height
         coords_w = torch.arange(width, dtype=boxes.dtype, device=boxes.device) / width
@@ -693,7 +641,7 @@ class SAM3(PretrainedModel):
         )
 
     def setup_text(self, config, text_config, encoder_config):
-        hidden_size = text_config.get("hidden_size", text_config.get("d_model", 768))
+        hidden_size = text_config.get("hidden_size", 768)
         self.text_encoder = nn.Module()
         self.text_encoder.embeddings = nn.Module()
         vocab_size = text_config.get("vocab_size", 49408)
@@ -799,7 +747,7 @@ class SAM3(PretrainedModel):
         return {
             "pred_masks": masks["pred_masks"],
             "semantic_seg": masks["semantic_seg"],
-            "pred_boxes": box_cxcywh_to_xyxy(boxes[-1]),
+            "pred_boxes": box_convert(boxes[-1], "cxcywh", "xyxy"),
             "pred_logits": logits[-1],
             "presence_logits": decoded["presence_logits"][-1],
         }
@@ -950,13 +898,13 @@ class SAM31(SAM3):
         )
         self.memory_attention = Sam3MemoryAttention(
             hidden_size,
-            config.get("num_attention_heads", config.get("num_heads", 8)),
+            config.get("num_attention_heads", 8),
             config.get("memory_attention_layers", 4),
             config.get("memory_intermediate_size", 2048),
         )
         self.multiplex_mask_decoder = Sam3MultiplexMaskDecoder(
             hidden_size,
-            config.get("num_attention_heads", config.get("num_heads", 8)),
+            config.get("num_attention_heads", 8),
             config.get("multiplex_count", 8),
             config.get("num_multimask_outputs", 3),
             config.get("iou_hidden", 256),

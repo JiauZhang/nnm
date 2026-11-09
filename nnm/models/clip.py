@@ -15,7 +15,7 @@ class CLIPVisionEmbeddings(nn.Module):
         super().__init__()
         image_size = config.get("image_size", 224)
         patch_size = config.get("patch_size", 16)
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        hidden_size = config.hidden_size
         num_channels = config.get("num_channels", 3)
         self.patch_size = patch_size
         self.num_patches = (image_size // patch_size) ** 2
@@ -56,7 +56,7 @@ class CLIPVisionEmbeddings(nn.Module):
 class CLIPTextEmbeddings(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
+        hidden_size = config.hidden_size
         vocab_size = config.get("vocab_size", 49408)
         max_positions = config.get("max_position_embeddings", 77)
         self.token_embedding = nn.Embedding(vocab_size, hidden_size)
@@ -81,11 +81,11 @@ class CLIPEncoder(nn.Module):
 class CLIPVisionModel(nn.Module):
     def __init__(self, config, post_layernorm=True):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
+        num_layers = config.num_hidden_layers
         intermediate_size = config.get("intermediate_size", hidden_size * 4)
-        norm_eps = config.get("layer_norm_eps", config.get("norm_eps", 1e-6))
+        norm_eps = config.get("layer_norm_eps", 1e-6)
         activation = config.get("hidden_act", "quick_gelu")
         self.embeddings = CLIPVisionEmbeddings(config)
         self.pre_layrnorm = nn.LayerNorm(hidden_size, eps=norm_eps)
@@ -115,11 +115,11 @@ class CLIPVisionModel(nn.Module):
 class CLIPTextModel(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
+        num_layers = config.num_hidden_layers
         intermediate_size = config.get("intermediate_size", hidden_size * 4)
-        norm_eps = config.get("layer_norm_eps", config.get("norm_eps", 1e-6))
+        norm_eps = config.get("layer_norm_eps", 1e-6)
         activation = config.get("hidden_act", "quick_gelu")
         self.embeddings = CLIPTextEmbeddings(config)
         self.encoder = CLIPEncoder(
@@ -157,8 +157,8 @@ class CLIP(PretrainedModel):
         super().__init__()
         vision_config = config.get("vision_config") or config
         text_config = config.get("text_config") or config
-        vision_hidden_size = vision_config.get("hidden_size", vision_config.get("embed_dim"))
-        text_hidden_size = text_config.get("hidden_size", text_config.get("embed_dim"))
+        vision_hidden_size = vision_config.hidden_size
+        text_hidden_size = text_config.hidden_size
         projection_dim = config.get("projection_dim", text_hidden_size)
         logit_scale_init_value = config.get("logit_scale_init_value", 2.6592)
         self.vision_model = CLIPVisionModel(vision_config)

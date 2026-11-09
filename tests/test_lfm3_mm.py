@@ -4,7 +4,8 @@ import pytest
 import torch
 
 from conippets.config import Config
-from nnm.models.lfm3.vision import Lfm3VisionTower, vision_position_ids
+from nnm.layers.vit import merge_position_ids
+from nnm.models.lfm3.vision import Lfm3VisionTower
 
 VISION = {
     "model_type": "lfm3_vl_vision",
@@ -43,7 +44,7 @@ def reference():
 
 def test_position_ids_follow_merge_blocks():
     grid = torch.tensor([[1, 4, 4], [2, 4, 8]])
-    positions = vision_position_ids(grid, 2)
+    positions = merge_position_ids(grid, 2)
     assert positions.shape == (16 + 64, 2)
     assert positions[:16, 0].tolist() == [0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3]
     assert torch.equal(positions[16:48], positions[48:])

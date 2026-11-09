@@ -1,11 +1,7 @@
-import os
-
 import torch
 from torch import nn
 
-from conippets.config import Config
-
-from nnm.models.laya.encoder import ModernBert
+from nnm.models.modernbert import ModernBertModel
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -15,19 +11,10 @@ class Laya(PretrainedModel):
     head_dropout = 0.1
     weight_pattern = "model.safetensors"
 
-    @classmethod
-    def load_config(cls, directory):
-        config = super().load_config(directory)
-        config.encoder = Config.from_json(os.path.join(directory, "encoder", "config.json"))
-        agent = Config.from_json(os.path.join(directory, "rl_agent_config.json"))
-        config.head_layers = agent.head_layers
-        config.num_actions = len(agent.act_costs) + 1
-        return config
-
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.encoder = ModernBert(config.encoder)
+        self.encoder = ModernBertModel(config.encoder)
         hidden = config.encoder.hidden_size
         self.head = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(hidden, hidden // 64, 4 * hidden, self.head_dropout, batch_first=True, norm_first=True),

@@ -169,7 +169,9 @@ class SelfAttention(nn.Module):
         if lengths is not None:
             return ragged_attention(query, key, value, lengths, scale=self.scaling, enable_gqa=True, causal=self.causal)
         if attn_mask is not None and attn_mask.dtype == torch.bool:
-            attn_mask = torch.where(attn_mask, 0.0, float("-inf"))[None, None]
+            attn_mask = torch.where(attn_mask, 0.0, float("-inf"))
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask[None, None]
         return causal_attention(
             query,
             key,

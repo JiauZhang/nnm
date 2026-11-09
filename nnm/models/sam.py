@@ -73,7 +73,7 @@ class SamPromptEncoder(nn.Module):
     def __init__(self, vision_config, config):
         super().__init__()
         num_pos_feats = vision_config.get("num_pos_feats", 128)
-        scale = vision_config.get("scale", vision_config.get("hidden_size", 768) // 2)
+        scale = vision_config.get("scale", vision_config["hidden_size"] // 2)
         self.shared_embedding = SamPositionalEmbedding(num_pos_feats, scale)
         self.mask_embed = SamMaskEmbedding(config)
         hidden_size = config.get("hidden_size", 256)
@@ -538,7 +538,7 @@ class SAM(PretrainedModel):
         prompt_encoder_config = config.get("prompt_encoder_config")
         mask_decoder_config = config.get("mask_decoder_config")
         num_pos_feats = vision_config.get("num_pos_feats", 128)
-        scale = vision_config.get("scale", vision_config.get("hidden_size", 768) // 2)
+        scale = vision_config.get("scale", vision_config["hidden_size"] // 2)
         self.shared_image_embedding = SamPositionalEmbedding(num_pos_feats, scale)
         self.vision_encoder = SamVisionEncoder(vision_config)
         self.prompt_encoder = SamPromptEncoder(vision_config, prompt_encoder_config)

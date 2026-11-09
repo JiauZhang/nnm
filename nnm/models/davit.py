@@ -19,11 +19,11 @@ class DaViTPatchEmbed(nn.Module):
     def __init__(self, config, stage):
         super().__init__()
         patch_size = _stage(config.get("patch_size", [7, 3, 3, 3]), stage, 3)
-        embed_dim = _stage(config.get("embed_dim", config.get("hidden_size", [128, 256, 512, 1024])), stage, 128)
+        embed_dim = _stage(config.get("embed_dims", [128, 256, 512, 1024]), stage, 128)
         in_channels = (
-            config.get("in_channels", config.get("in_chans", config.get("num_channels", 3)))
+            config.get("num_channels", 3)
             if stage == 0
-            else _stage(config.get("embed_dim", config.get("hidden_size", [128, 256, 512, 1024])), stage - 1, 128)
+            else _stage(config.get("embed_dims", [128, 256, 512, 1024]), stage - 1, 128)
         )
         stride = _stage(config.get("patch_stride", [4, 2, 2, 2]), stage, 2)
         padding = _stage(config.get("patch_padding", [3, 1, 1, 1]), stage, 1)
@@ -108,8 +108,8 @@ class DaViTBlock(nn.Module):
 class DaViT(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        depths = config.get("depths", config.get("num_hidden_layers", [1, 1, 9, 1]))
-        embed_dims = config.get("embed_dim", config.get("hidden_size", [128, 256, 512, 1024]))
+        depths = config.get("depths", [1, 1, 9, 1])
+        embed_dims = config.get("embed_dims", [128, 256, 512, 1024])
         num_heads = config.get("num_heads", [4, 8, 16, 32])
         num_groups = config.get("num_groups", [4, 8, 16, 32])
         window_size = config.get("window_size", 12)

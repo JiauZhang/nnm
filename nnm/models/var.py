@@ -11,11 +11,11 @@ from nnm.models.pretrained import PretrainedModel
 class VarVQVAE(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim", 128))
+        hidden_size = config.get("hidden_size", 128)
         in_channels = config.get("in_channels", 3)
         num_res_blocks = config.get("num_res_blocks", 2)
         downsample = config.get("downsample", [2, 2])
-        norm_eps = config.get("norm_eps", 1e-6)
+        norm_eps = config.get("layer_norm_eps", 1e-6)
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, hidden_size, 3, padding=1),
             *[ResBlock2D(hidden_size, norm_eps) for _ in range(num_res_blocks)],
@@ -43,10 +43,10 @@ class VarVQVAE(PretrainedModel):
 class VAR(PretrainedModel):
     def __init__(self, config):
         super().__init__()
-        hidden_size = config.get("hidden_size", config.get("embed_dim"))
-        num_heads = config.get("num_attention_heads", config.get("num_heads"))
-        num_layers = config.get("num_hidden_layers", config.get("depth"))
-        vocab_size = config.get("vocab_size", config.get("codebook_size", 4096))
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
+        num_layers = config.num_hidden_layers
+        vocab_size = config.get("vocab_size", 4096)
         num_classes = config.get("num_classes", 1000)
         num_scales = config.get("num_scales", 10)
         max_position = config.get("max_position_embeddings", 1024)
