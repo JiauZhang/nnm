@@ -12,6 +12,7 @@ ACTIVATIONS = {
     "silu": F.silu,
     "relu": F.relu,
     "gelu_pytorch_tanh": lambda x: F.gelu(x, approximate="tanh"),
+    "gelu_new": lambda x: F.gelu(x, approximate="tanh"),
     "quick_gelu": quick_gelu,
 }
 

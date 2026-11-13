@@ -1,253 +1,92 @@
-import os
-
-import importlib.util
 import json
+import os
+import sys
 
 import numpy as np
 import pytest
 import torch
-
 from conippets.config import Config
 
 from nnm.models.kitten_tts import KittenTTS
-from nnm.models.albert import AlbertEncoder
-from nnm.models.kitten_tts.text_encoder import TextEncoder
-from nnm.models.kitten_tts.predictor import Predictor
-from nnm.models.kitten_tts.decoder import KittenDecoder
-from nnm.models.kitten_tts.generator import KittenGenerator
-from nnm.models.kitten_tts.text import text_to_tokens
 
-try:
-    import espeakng_loader  # noqa: F401
-    import phonemizer  # noqa: F401
-
-    PHONEMIZER_AVAILABLE = True
-except ImportError:
-    PHONEMIZER_AVAILABLE = False
+REPOS = {
+    "pico": "kitten-tts-2-pico",
+    "nano": "kitten-tts-2-nano",
+    "mini": "kitten-tts-2-mini",
+}
 
 
-def map_checkpoint(state_dict, model_path, config):
-    manifest_path = os.path.join(model_path, "nnm_weights.json")
-    if not os.path.exists(manifest_path):
-        return state_dict
-    mapping = json.loads(open(manifest_path).read()).get("mapping")
-    if mapping is None:
-        return state_dict
-    spec = importlib.util.spec_from_file_location("kitten_tts_mapping", os.path.join(model_path, mapping))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.map_state_dict(state_dict, config)
+def _infer(model, n_token, seed=1234):
+    torch.manual_seed(seed)
+    ids = torch.randint(0, n_token, (1, 24))
+    style = torch.randn(1, 256)
+    torch.manual_seed(42)
+    return model.infer(ids, style, speed=1.0), ids, style
 
 
-@pytest.fixture(scope="module")
-def config(request):
-    model_path = request.config.getoption("--model-path")
-    assert model_path is not None, "--model-path required"
-    config_path = os.path.join(model_path, "config.json")
-    return Config.from_json(config_path)
+@pytest.mark.parametrize("family", list(REPOS))
+def test_architecture(family, weight_config):
+    config = weight_config(REPOS[family])
+    model = KittenTTS(config).eval()
+    out, _, _ = _infer(model, config.n_token)
+    assert out["waveform"].dim() == 1
+    assert out["waveform"].numel() > 0
+    assert out["duration"].shape == (24,)
+    assert (out["duration"] >= 1).all()
 
 
-@pytest.fixture(scope="module")
-def loaded_model(request):
-    path = request.config.getoption("--model-path")
-    assert path is not None, "--model-path required for integration tests"
-    model = KittenTTS.from_pretrained(path)
-    model.eval()
-    return model
+@pytest.mark.parametrize("family", list(REPOS))
+def test_speed_shortens(family, weight_config):
+    config = weight_config(REPOS[family])
+    model = KittenTTS(config).eval()
+    slow, ids, style = _infer(model, config.n_token)
+    torch.manual_seed(42)
+    fast = model.infer(ids, style, speed=2.0)
+    assert fast["duration"].sum() <= slow["duration"].sum()
 
 
-class TestAlbert:
-    @pytest.mark.parametrize("batch,seq_len", [(1, 10), (2, 20)])
-    @torch.no_grad()
-    def test_albert_output_shape(self, config, batch, seq_len):
-        albert = AlbertEncoder(config.albert)
-        input_ids = torch.randint(0, config.albert.vocab_size, (batch, seq_len))
-        out = albert(input_ids)
-        assert out.shape == (batch, seq_len, config.albert.embed_dim)
-
-    @torch.no_grad()
-    def test_albert_shared_layer(self, config):
-        albert = AlbertEncoder(config.albert)
-        input_ids = torch.randint(0, config.albert.vocab_size, (1, 10))
-        out1 = albert(input_ids)
-        out2 = albert(input_ids)
-        torch.testing.assert_close(out1, out2)
+def _repo_variant(model_path):
+    manifest = json.loads(open(os.path.join(model_path, "nnm_weights.json")).read())
+    key = next(iter(manifest["modules"]))
+    variant = key[len("kitten_tts_") :] if key.startswith("kitten_tts_") else None
+    return manifest["modules"][key], variant
 
 
-class TestTextEncoder:
-    @torch.no_grad()
-    def test_text_encoder_output_shape(self, config):
-        te = TextEncoder(config)
-        input_ids = torch.randint(0, config.albert.vocab_size, (1, 10))
-        style = torch.randn(1, 256)
-        albert_out = torch.randn(1, 10, config.albert.embed_dim)
-        lstm_feat, cnn_feat = te(input_ids, style, bert_output=albert_out)
-        assert lstm_feat.shape[0] == 1
-        assert lstm_feat.shape[2] == 10
-        assert cnn_feat.shape[0] == 1
-        assert cnn_feat.shape[2] == 10
+def test_pretrained_loads(model_path, weight_limit):
+    if model_path is None:
+        pytest.skip("--model-path required")
+    weight_limit(model_path)
+    entry, variant = _repo_variant(model_path)
+    model = KittenTTS.from_pretrained(model_path, variant=variant).eval()
+    config = Config.from_json(os.path.join(model_path, entry["config"]))
+    out, _, _ = _infer(model, config.n_token)
+    assert out["waveform"].numel() > 0
 
 
-class TestPredictor:
-    @torch.no_grad()
-    def test_predictor_output(self, config):
-        pred = Predictor(config)
-        text = torch.randn(10, 1, 256)
-        style = torch.randn(1, 256)
-        duration, f0, n_amp = pred(text, style, speed=1.0)
-        assert duration.shape == (10, 1)
-        assert len(duration) > 0
-        assert f0.shape[0] == 1
-        assert n_amp.shape[0] == 1
-        assert (duration >= config.predictor.dur_min).all()
-        assert (duration <= config.predictor.dur_max).all()
+def test_matches_upstream(model_path, reference_path, weight_limit):
+    if model_path is None or reference_path is None:
+        pytest.skip("--model-path and --reference-path required")
+    weight_limit(model_path)
+    pytest.importorskip("scipy")
+    sys.path.insert(0, reference_path)
+    from kittenml.kittentts2_tiny.torch_model import TorchModel  # noqa: PLC0415
 
-    @torch.no_grad()
-    def test_predictor_speed_effect(self, config):
-        pred = Predictor(config)
-        text = torch.randn(10, 1, 256)
-        style = torch.randn(1, 256)
-        dur1, _, _ = pred(text, style, speed=1.0)
-        dur2, _, _ = pred(text, style, speed=2.0)
-        assert (dur2 <= dur1).all()
+    entry, variant = _repo_variant(model_path)
+    config = Config.from_json(os.path.join(model_path, entry["config"]))
+    model = KittenTTS.from_pretrained(model_path, variant=variant).eval()
 
+    source = entry["sources"][0]
+    from huggingface_hub import hf_hub_download  # noqa: PLC0415
 
-class TestDecoder:
-    @torch.no_grad()
-    def test_decoder_output_shape(self, config):
-        decoder = KittenDecoder(config)
-        text = torch.randn(1, 128, 25)
-        f0 = torch.randn(1, 1, 50)
-        n_amp = torch.randn(1, 1, 50)
-        style = torch.randn(1, 256)
-        mel = decoder(text, f0, n_amp, style)
-        assert mel.shape[0] == 1
-        assert mel.shape[1] == config.decoder.decode_out_channels
+    weights_path = hf_hub_download(source["repo"], source["pattern"])
+    arch = json.loads(open(os.path.join(model_path, entry["config"])).read())
+    reference = TorchModel(arch, weights_path, device="cpu")
 
+    out, ids, style = _infer(model, config.n_token)
+    torch.manual_seed(42)
+    ref_wav, ref_dur = reference(ids[0].tolist(), style.numpy(), 1.0)
 
-class TestGenerator:
-    @torch.no_grad()
-    def test_generator_output_shape(self, config):
-        gen = KittenGenerator(config)
-        mel = torch.randn(1, 256, 100)
-        style = torch.randn(1, config.generator.style_dim)
-        f0 = torch.randn(1, 1, 100)
-        concat = gen.m_source(f0)
-        assert concat.shape[1] == 22
-        waveform = gen(mel, style, harmonic_features=concat)
-        assert waveform.ndim == 1
-
-    @torch.no_grad()
-    def test_m_source_output_shape(self, config):
-        gen = KittenGenerator(config)
-        f0 = torch.randn(1, 1, 100)
-        stft = gen.m_source(f0)
-        assert stft.shape[0] == 1
-        assert stft.shape[1] == 22
-
-
-class TestModelLoading:
-    def test_from_pretrained_missing_config_raises(self, tmp_path):
-        with pytest.raises(FileNotFoundError):
-            KittenTTS.from_pretrained(str(tmp_path))
-
-    def test_voice_lookup(self, loaded_model):
-        arr = loaded_model.get_voice("Bruno")
-        assert arr.ndim == 2
-
-    def test_unknown_voice_raises(self, loaded_model):
-        with pytest.raises(KeyError):
-            loaded_model.get_voice("NonExistent")
-
-    def test_speed_priors(self, loaded_model):
-        speed = loaded_model.get_speed("Bruno")
-        assert speed > 0
-
-    def test_speed_override(self, loaded_model):
-        speed = loaded_model.get_speed("Bruno", speed=1.5)
-        assert speed == 1.5
-
-
-@pytest.mark.skipif(not PHONEMIZER_AVAILABLE, reason="phonemizer/espeakng required")
-class TestSynthesis:
-    @torch.no_grad()
-    def test_synthesize_output(self, loaded_model):
-        result = loaded_model.synthesize("Hello world", voice="Bruno")
-        assert "waveform" in result
-        assert "duration" in result
-        assert result["sample_rate"] == 24000
-        assert result["waveform"].ndim == 1
-        assert len(result["waveform"]) > 0
-
-    @torch.no_grad()
-    def test_synthesize_different_voices(self, loaded_model):
-        result1 = loaded_model.synthesize("Hello", voice="Bruno")
-        result2 = loaded_model.synthesize("Hello", voice="Bella")
-        assert len(result1["waveform"]) > 0
-        assert len(result2["waveform"]) > 0
-
-    @torch.no_grad()
-    def test_synthesize_deterministic_with_seed(self, loaded_model):
-        torch.manual_seed(42)
-        np.random.seed(42)
-        result1 = loaded_model.synthesize("Test", voice="Bruno")
-
-        torch.manual_seed(42)
-        np.random.seed(42)
-        result2 = loaded_model.synthesize("Test", voice="Bruno")
-
-        np.testing.assert_array_almost_equal(result1["waveform"], result2["waveform"])
-
-    @torch.no_grad()
-    def test_synthesize_speed_affects_duration(self, loaded_model):
-        result1 = loaded_model.synthesize("Hello world", voice="Bruno", speed=1.0)
-        result2 = loaded_model.synthesize("Hello world", voice="Bruno", speed=2.0)
-        assert len(result1["waveform"]) >= len(result2["waveform"])
-
-
-@pytest.mark.skipif(not PHONEMIZER_AVAILABLE, reason="phonemizer/espeakng required")
-class TestRegression:
-    @torch.no_grad()
-    def test_from_pretrained_vs_direct_init(self, loaded_model, model_path):
-        voices_path = os.path.join(model_path, "voices.npz")
-
-        torch.manual_seed(42)
-        np.random.seed(42)
-        result1 = loaded_model.synthesize("Hello world", voice="Bruno")
-
-        torch.manual_seed(42)
-        np.random.seed(42)
-        config = Config.from_json(os.path.join(model_path, "config.json"))
-        checkpoint = torch.load(os.path.join(model_path, "model.pth"), map_location="cpu", weights_only=True)
-        model2 = KittenTTS(config, voices_path=voices_path)
-        model2.load_state_dict(map_checkpoint(checkpoint.get("state_dict", checkpoint), model_path, config), strict=True)
-        model2.eval()
-        result2 = model2.synthesize("Hello world", voice="Bruno")
-
-        assert len(result1["waveform"]) == len(result2["waveform"])
-        assert result1["sample_rate"] == result2["sample_rate"]
-        assert result1["voice"] == result2["voice"]
-        np.testing.assert_array_almost_equal(result1["duration"], result2["duration"])
-
-    @torch.no_grad()
-    def test_long_text_synthesis(self, loaded_model):
-        text = "The quick brown fox jumps over the lazy dog. " * 3
-        result = loaded_model.synthesize(text, voice="Bruno")
-        assert len(result["waveform"]) > 0
-        assert result["duration"] is not None
-
-
-@pytest.mark.skipif(not PHONEMIZER_AVAILABLE, reason="phonemizer/espeakng required")
-class TestTextProcessing:
-    def test_text_to_tokens_basic(self):
-        tokens = text_to_tokens("Hello world")
-        assert len(tokens) > 0
-        assert all(isinstance(t, int) for t in tokens)
-
-    def test_text_to_tokens_empty(self):
-        with pytest.raises(IndexError):
-            text_to_tokens("")
-
-    def test_text_to_tokens_special_chars(self):
-        tokens = text_to_tokens("Hello, world! 123")
-        assert len(tokens) > 0
+    np.testing.assert_array_equal(out["duration"].numpy(), ref_dur)
+    wav = out["waveform"].numpy()
+    assert len(wav) == len(ref_wav)
+    np.testing.assert_allclose(wav, ref_wav, atol=1e-4, rtol=1e-4)

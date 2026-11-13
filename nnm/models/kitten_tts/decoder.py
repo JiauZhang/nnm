@@ -1,144 +1,221 @@
 import math
+import random
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
+from torch.nn.utils import weight_norm
 
-from .blocks import AdaIN1d
+from ..styletts2.blocks import AdainResBlk1d
+from ..styletts2.vocoder import AdaINResBlock1, SourceModuleHnNSF
 
 
-class DecoderBlock(nn.Module):
+class TorchSTFT(nn.Module):
+    def __init__(self, filter_length=800, hop_length=200, win_length=800, window_float64=False):
+        super().__init__()
+        self.filter_length = filter_length
+        self.hop_length = hop_length
+        self.win_length = win_length
+        if window_float64:
+            n = torch.arange(win_length, dtype=torch.float64)
+            window = (0.5 - 0.5 * torch.cos(2 * math.pi * n / win_length)).float()
+        else:
+            window = torch.hann_window(win_length, periodic=True, dtype=torch.float32)
+        self.register_buffer("window", window, persistent=False)
+
+    def transform(self, input_data):
+        forward_transform = torch.stft(
+            input_data,
+            self.filter_length,
+            self.hop_length,
+            self.win_length,
+            window=self.window.to(input_data.device),
+            return_complex=True,
+        )
+        return torch.abs(forward_transform), torch.angle(forward_transform)
+
+    def inverse(self, magnitude, phase):
+        inverse_transform = torch.istft(
+            magnitude * torch.exp(phase * 1j),
+            self.filter_length,
+            self.hop_length,
+            self.win_length,
+            window=self.window.to(magnitude.device),
+        )
+        return inverse_transform.unsqueeze(-2)
+
+
+class Generator(nn.Module):
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        style_dim=128,
-        kernel_size=3,
-        leaky_relu_slope=0.2,
-        residual_scale=1 / math.sqrt(2),
+        style_dim,
+        resblock_kernel_sizes,
+        upsample_rates,
+        upsample_initial_channel,
+        resblock_dilation_sizes,
+        upsample_kernel_sizes,
+        gen_istft_n_fft,
+        gen_istft_hop_size,
+        adain_affine=False,
+        magnitude_activation="exp",
+        window_float64=False,
     ):
         super().__init__()
-        self.conv1x1 = nn.Conv1d(in_channels, out_channels, 1, bias=False)
-        self.adain1 = AdaIN1d(in_channels, style_dim)
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=kernel_size // 2)
-        self.adain2 = AdaIN1d(out_channels, style_dim)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=kernel_size // 2)
-        self.residual_scale = residual_scale
-        self.leaky_relu_slope = leaky_relu_slope
-
-    def forward(self, x, style):
-        x_res = self.conv1x1(x)
-        x = F.leaky_relu(self.adain1(x, style), self.leaky_relu_slope)
-        x = self.conv1(x)
-        x = F.leaky_relu(self.adain2(x, style), self.leaky_relu_slope)
-        x = self.conv2(x)
-        return (x + x_res) * self.residual_scale
-
-
-class DecoderUpsampleBlock(nn.Module):
-    def __init__(
-        self,
-        in_channels,
-        out_channels,
-        style_dim=128,
-        kernel_size=3,
-        leaky_relu_slope=0.2,
-        residual_scale=1 / math.sqrt(2),
-    ):
-        super().__init__()
-        self.conv1x1 = nn.Conv1d(in_channels, out_channels, 1, bias=False)
-        self.adain1 = AdaIN1d(in_channels, style_dim)
-        self.pool = nn.ConvTranspose1d(
-            in_channels,
-            in_channels,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            output_padding=1,
-            groups=in_channels,
+        self.num_kernels = len(resblock_kernel_sizes)
+        self.num_upsamples = len(upsample_rates)
+        self.magnitude_activation = magnitude_activation
+        upsample_scale = math.prod(upsample_rates) * gen_istft_hop_size
+        self.m_source = SourceModuleHnNSF(
+            sampling_rate=24000, upsample_scale=upsample_scale, harmonic_num=8, voiced_threshod=10
         )
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=kernel_size // 2)
-        self.adain2 = AdaIN1d(out_channels, style_dim)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=kernel_size // 2)
-        self.residual_scale = residual_scale
-        self.leaky_relu_slope = leaky_relu_slope
-
-    def forward(self, x, style):
-        x_up = F.interpolate(x, scale_factor=2, mode="nearest")
-        x_res = self.conv1x1(x_up)
-
-        x = F.leaky_relu(self.adain1(x, style), self.leaky_relu_slope)
-        x = self.pool(x)
-        x = self.conv1(x)
-        x = F.leaky_relu(self.adain2(x, style), self.leaky_relu_slope)
-        x = self.conv2(x)
-        return (x + x_res) * self.residual_scale
-
-
-class KittenDecoder(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        c = config.decoder
-        self._style_dim = c.style_dim
-        self.encode = DecoderBlock(
-            c.encode_in_channels,
-            c.encode_out_channels,
-            style_dim=c.style_dim,
-            kernel_size=c.block_kernel,
-            leaky_relu_slope=c.leaky_relu_slope,
-            residual_scale=c.residual_scale,
-        )
-        self.decode = nn.ModuleList(
-            [
-                *[
-                    DecoderBlock(
-                        c.decode_in_channels,
-                        c.decode_out_channels,
-                        style_dim=c.style_dim,
-                        kernel_size=c.block_kernel,
-                        leaky_relu_slope=c.leaky_relu_slope,
-                        residual_scale=c.residual_scale,
+        self.f0_upsamp = nn.Upsample(scale_factor=upsample_scale)
+        self.noise_convs = nn.ModuleList()
+        self.noise_res = nn.ModuleList()
+        self.ups = nn.ModuleList()
+        for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
+            self.ups.append(
+                weight_norm(
+                    nn.ConvTranspose1d(
+                        upsample_initial_channel // (2**i),
+                        upsample_initial_channel // (2 ** (i + 1)),
+                        k,
+                        u,
+                        padding=(k - u) // 2,
                     )
-                    for _ in range(3)
-                ],
-                DecoderUpsampleBlock(
-                    c.decode_in_channels,
-                    c.decode_out_channels,
-                    style_dim=c.style_dim,
-                    kernel_size=c.block_kernel,
-                    leaky_relu_slope=c.leaky_relu_slope,
-                    residual_scale=c.residual_scale,
-                ),
-            ]
+                )
+            )
+        self.resblocks = nn.ModuleList()
+        for i in range(len(self.ups)):
+            ch = upsample_initial_channel // (2 ** (i + 1))
+            for k, d in zip(resblock_kernel_sizes, resblock_dilation_sizes):
+                self.resblocks.append(AdaINResBlock1(ch, k, d, style_dim, affine=adain_affine))
+            c_cur = upsample_initial_channel // (2 ** (i + 1))
+            if i + 1 < len(upsample_rates):
+                stride_f0 = math.prod(upsample_rates[i + 1 :])
+                self.noise_convs.append(
+                    nn.Conv1d(
+                        gen_istft_n_fft + 2, c_cur, kernel_size=stride_f0 * 2, stride=stride_f0, padding=(stride_f0 + 1) // 2
+                    )
+                )
+                self.noise_res.append(AdaINResBlock1(c_cur, 7, [1, 3, 5], style_dim, affine=adain_affine))
+            else:
+                self.noise_convs.append(nn.Conv1d(gen_istft_n_fft + 2, c_cur, kernel_size=1))
+                self.noise_res.append(AdaINResBlock1(c_cur, 11, [1, 3, 5], style_dim, affine=adain_affine))
+        self.post_n_fft = gen_istft_n_fft
+        self.conv_post = weight_norm(nn.Conv1d(ch, self.post_n_fft + 2, 7, 1, padding=3))
+        self.reflection_pad = nn.ReflectionPad1d((1, 0))
+        self.stft = TorchSTFT(
+            filter_length=gen_istft_n_fft,
+            hop_length=gen_istft_hop_size,
+            win_length=gen_istft_n_fft,
+            window_float64=window_float64,
         )
-        self.asr_res = nn.Conv1d(c.asr_res_in, c.asr_res_out, 1)
-        self.F0_conv = nn.Conv1d(
-            c.f0_downsample_channels,
-            c.f0_downsample_channels,
-            c.downsample_kernel,
-            stride=c.downsample_stride,
-            padding=c.downsample_padding,
+
+    def forward(self, x, style, f0):
+        with torch.no_grad():
+            f0 = self.f0_upsamp(f0[:, None]).transpose(1, 2)
+            har_source, _, _ = self.m_source(f0)
+            har_source = har_source.transpose(1, 2).squeeze(1)
+            har_spec, har_phase = self.stft.transform(har_source)
+            har = torch.cat([har_spec, har_phase], dim=1)
+        for i in range(self.num_upsamples):
+            x = F.leaky_relu(x, negative_slope=0.1)
+            x_source = self.noise_res[i](self.noise_convs[i](har), style)
+            x = self.ups[i](x)
+            if i == self.num_upsamples - 1:
+                x = self.reflection_pad(x)
+            x = x + x_source
+            xs = None
+            for j in range(self.num_kernels):
+                if xs is None:
+                    xs = self.resblocks[i * self.num_kernels + j](x, style)
+                else:
+                    xs += self.resblocks[i * self.num_kernels + j](x, style)
+            x = xs / self.num_kernels
+        x = F.leaky_relu(x)
+        x = self.conv_post(x)
+        magnitude = x[:, : self.post_n_fft // 2 + 1, :]
+        if self.magnitude_activation == "exp":
+            spec = torch.exp(magnitude)
+        elif self.magnitude_activation == "softplus":
+            spec = F.softplus(magnitude)
+        else:
+            spec = F.softplus(magnitude) + 1e-5
+        phase = torch.sin(x[:, self.post_n_fft // 2 + 1 :, :])
+        return self.stft.inverse(spec, phase)
+
+
+class Decoder(nn.Module):
+    def __init__(
+        self,
+        dim_in,
+        style_dim,
+        dim_out,
+        resblock_kernel_sizes,
+        upsample_rates,
+        upsample_initial_channel,
+        resblock_dilation_sizes,
+        upsample_kernel_sizes,
+        gen_istft_n_fft,
+        gen_istft_hop_size,
+        encode_out_channels,
+        decode_out_channels,
+        decode_upsample_out_channels,
+        asr_res_in_channels,
+        adain_affine=False,
+        magnitude_activation="exp",
+        training_downsample=False,
+        window_float64=False,
+    ):
+        super().__init__()
+        self.training_downsample = training_downsample
+        self.encode = AdainResBlk1d(dim_in + 2, encode_out_channels, style_dim, affine=adain_affine)
+        self.decode = nn.ModuleList()
+        for _ in range(3):
+            self.decode.append(AdainResBlk1d(decode_out_channels + 2 + 64, decode_out_channels, style_dim, affine=adain_affine))
+        self.decode.append(
+            AdainResBlk1d(
+                decode_out_channels + 2 + 64, decode_upsample_out_channels, style_dim, upsample=True, affine=adain_affine
+            )
         )
-        self.N_conv = nn.Conv1d(
-            c.n_downsample_channels,
-            c.n_downsample_channels,
-            c.downsample_kernel,
-            stride=c.downsample_stride,
-            padding=c.downsample_padding,
+        self.F0_conv = weight_norm(nn.Conv1d(1, 1, kernel_size=3, stride=2, groups=1, padding=1))
+        self.N_conv = weight_norm(nn.Conv1d(1, 1, kernel_size=3, stride=2, groups=1, padding=1))
+        self.asr_res = nn.Sequential(weight_norm(nn.Conv1d(asr_res_in_channels, 64, kernel_size=1)))
+        self.generator = Generator(
+            style_dim,
+            resblock_kernel_sizes,
+            upsample_rates,
+            upsample_initial_channel,
+            resblock_dilation_sizes,
+            upsample_kernel_sizes,
+            gen_istft_n_fft,
+            gen_istft_hop_size,
+            adain_affine=adain_affine,
+            magnitude_activation=magnitude_activation,
+            window_float64=window_float64,
         )
 
-    def forward(self, text_expanded, f0, n_amp, style):
-        if style.dim() == 1:
-            style = style.unsqueeze(0)
-        decoder_style = style[:, : self._style_dim]
+    def forward(self, asr, F0_curve, N, style):
+        if self.training and self.training_downsample:
+            F0_down = random.choice([0, 3, 7])
+            N_down = random.choice([0, 3, 7, 15])
+            if F0_down:
+                kernel = torch.ones(1, 1, F0_down, device=F0_curve.device, dtype=F0_curve.dtype)
+                F0_curve = F.conv1d(F0_curve.unsqueeze(1), kernel, padding=F0_down // 2).squeeze(1) / F0_down
+            if N_down:
+                kernel = torch.ones(1, 1, N_down, device=N.device, dtype=N.dtype)
+                N = F.conv1d(N.unsqueeze(1), kernel, padding=N_down // 2).squeeze(1) / N_down
 
-        f0_ds = self.F0_conv(f0)
-        n_ds = self.N_conv(n_amp)
-
-        encode_out = self.encode(torch.cat([text_expanded, f0_ds, n_ds], dim=1), decoder_style)
-        asr_out = self.asr_res(text_expanded)
-
-        x = encode_out
+        F0 = self.F0_conv(F0_curve.unsqueeze(1))
+        N = self.N_conv(N.unsqueeze(1))
+        x = torch.cat([asr, F0, N], axis=1)
+        x = self.encode(x, style)
+        asr_res = self.asr_res(asr)
+        res = True
         for block in self.decode:
-            x = block(torch.cat([x, asr_out, f0_ds, n_ds], dim=1), decoder_style)
-        return x
+            if res:
+                x = torch.cat([x, asr_res, F0, N], axis=1)
+            x = block(x, style)
+            if block.upsample_type != "none":
+                res = False
+        return self.generator(x, style, F0_curve)
