@@ -4,7 +4,6 @@ from torch import nn
 from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.transformer import TransformerBlock
 from nnm.models.pretrained import PretrainedModel
 
@@ -81,17 +80,6 @@ class Qwen2Model(nn.Module):
     def forward(self, input_ids=None, attn_mask=None, inputs_embeds=None, cache=None):
         output_embeds = self.token_embeds(input_ids) if inputs_embeds is None else inputs_embeds
         cache_len = cache.get_seq_length() if cache is not None else 0
-        if attn_mask is not None:
-            batch, seq_len = attn_mask.shape
-            attn_mask = make_causal_mask(
-                seq_len,
-                seq_len + cache_len,
-                cache_len,
-                attn_mask.device,
-                attn_mask.dtype,
-                attn_mask=attn_mask,
-                sliding_window=self.sliding_window,
-            )
         positions = torch.arange(cache_len, cache_len + output_embeds.shape[1], device=output_embeds.device)
         rotary_embeddings = self.position_encoder(positions)
         layers = cache.layers if cache is not None else [None] * len(self.layers)

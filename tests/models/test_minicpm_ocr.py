@@ -108,7 +108,7 @@ class TestArchitecture:
 
     def test_incremental_decoding_matches_the_full_pass(self):
         model = MiniCPMOcrModel(tiny_config()).eval()
-        cache = build_layers_cache(model.backbone.layer_types, model.backbone.config)
+        cache = build_layers_cache(model.backbone.layer_types, model.backbone.config, 64)
         input_ids = torch.randint(1, 90, (2, 10))
         with torch.no_grad():
             full = model(input_ids)

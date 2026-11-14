@@ -43,7 +43,8 @@ class Qwen3ASRThinker(nn.Module):
         self, input_ids, input_features=None, feature_attention_mask=None, max_new_tokens=256, eos_token_ids=(151645, 151643)
     ):
         inputs_embeds = self.embed_inputs(input_ids, input_features, feature_attention_mask)
-        cache = Cache([KVCache() for _ in self.model.layers])
+        capacity = inputs_embeds.shape[1] + max_new_tokens
+        cache = Cache([KVCache(capacity) for _ in self.model.layers])
         hidden = self.model(inputs_embeds, cache=cache)
         token = self.lm_head(hidden[:, -1]).argmax(-1)
         tokens = []

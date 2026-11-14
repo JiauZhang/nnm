@@ -33,11 +33,11 @@ class GatedDeltaNetCache(CacheLayer):
         return self.conv_state is None
 
 
-def build_layers_cache(layer_types, text_config):
+def build_layers_cache(layer_types, text_config, capacity):
     layers = []
     for layer_type in layer_types:
         if layer_type == "full_attention":
-            layers.append(KVCache())
+            layers.append(KVCache(capacity))
         else:
             layers.append(GatedDeltaNetCache(text_config.linear_conv_kernel_dim))
     return Cache(layers)

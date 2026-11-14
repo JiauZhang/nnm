@@ -41,6 +41,7 @@ def test_lfm2_pretrained(require_model_path, source_repo, prompts, use_cache):
     nnm_cache = (
         Cache.from_layer_types(
             nnm_model.backbone.layer_types,
+            capacity=2048,
             state_size=getattr(nnm_model.config, "conv_L_cache", 3),
         )
         if use_cache

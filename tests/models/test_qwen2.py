@@ -292,7 +292,7 @@ def test_qwen2_incremental_decoding_with_external_cache():
         num_hidden_layers=3,
         sliding_window=None,
     ).eval()
-    cache = Cache([KVCache() for _ in range(model.num_hidden_layers)])
+    cache = Cache([KVCache(64) for _ in range(model.num_hidden_layers)])
     input_ids = torch.randint(0, 100, (2, 9))
 
     full = model(input_ids)

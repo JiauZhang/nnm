@@ -2,7 +2,6 @@ import torch
 from torch import nn
 
 from nnm.layers.attention import RotarySelfAttention
-from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.mamba import Mamba2Mixer
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
@@ -49,12 +48,7 @@ class FalconH1Model(nn.Module):
 
     def forward(self, inputs_embeds, attn_mask=None, conv_states=None, ssm_states=None, caches=None):
         inputs_embeds = inputs_embeds * self.embedding_multiplier
-        cache_len = caches[0].stored_length if caches is not None else 0
-        if attn_mask is not None:
-            batch, seq_len = attn_mask.shape
-            attn_mask = make_causal_mask(
-                seq_len, seq_len + cache_len, cache_len, attn_mask.device, attn_mask.dtype, attn_mask=attn_mask
-            )
+        cache_len = caches[0].get_seq_length() if caches is not None else 0
         positions = torch.arange(cache_len, cache_len + inputs_embeds.shape[1], device=inputs_embeds.device)
         rotary_embeddings = self.position_encoder(positions)
         new_conv_states = []

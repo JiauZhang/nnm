@@ -238,7 +238,8 @@ class Qwen3TTS(PretrainedModel):
         config = self.config.talker_config
         talker_embed, trailing_text, tts_pad_embed = self.embed_prompt(input_ids, speaker, language, non_streaming_mode)
 
-        cache = Cache([KVCache() for _ in talker.model.layers])
+        capacity = talker_embed.shape[1] + max_new_tokens
+        cache = Cache([KVCache(capacity) for _ in talker.model.layers])
         hidden = talker.model(talker_embed, cache=cache)
         token = select_token(suppressed_logits(talker.codec_head(hidden[:, -1]), config), do_sample, top_k, top_p, temperature)
         past_hidden = hidden[:, -1:]
@@ -248,10 +249,11 @@ class Qwen3TTS(PretrainedModel):
             if token.item() == config.codec_eos_token_id:
                 break
             token_embedding = talker.model.codec_embedding(token.unsqueeze(-1))
+            predictor_capacity = past_hidden.shape[1] + token_embedding.shape[1] + talker.code_predictor.config.num_code_groups
             group_codes = talker.code_predictor.generate(
                 past_hidden,
                 token_embedding,
-                cache=Cache([KVCache() for _ in talker.code_predictor.model.layers]),
+                cache=Cache([KVCache(predictor_capacity) for _ in talker.code_predictor.model.layers]),
                 do_sample=subtalker_do_sample,
                 top_k=subtalker_top_k,
                 top_p=subtalker_top_p,

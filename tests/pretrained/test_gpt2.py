@@ -20,7 +20,7 @@ def reference(require_reference_path):
 
 @pytest.fixture
 def cache(model):
-    return Cache([KVCache() for _ in range(model.backbone.num_layers)])
+    return Cache([KVCache(64) for _ in range(model.backbone.num_layers)])
 
 
 def make_inputs(batch=2, length=16):

@@ -10,7 +10,7 @@ class Cache:
         self.layers = list(layers)
 
     @classmethod
-    def from_layer_types(cls, layer_types, *, window_size=None, state_size=3):
+    def from_layer_types(cls, layer_types, *, capacity: int, window_size=None, state_size=3):
         layers = []
         for layer_type in layer_types:
             if layer_type == "conv":
@@ -20,7 +20,7 @@ class Cache:
                     raise ValueError("sliding_attention layers require window_size")
                 layers.append(SlidingWindowKVCache(window_size))
             else:
-                layers.append(KVCache())
+                layers.append(KVCache(capacity))
         return cls(layers)
 
     def __len__(self):
@@ -51,6 +51,10 @@ class Cache:
     def get_positions(self, query_length: int, device=None) -> torch.Tensor:
         start = self.get_seq_length()
         return torch.arange(start, start + query_length, device=device)
+
+    def reserve(self, capacity: int):
+        for layer in self.layers:
+            layer.reserve(capacity)
 
     def clear(self):
         for layer in self.layers:

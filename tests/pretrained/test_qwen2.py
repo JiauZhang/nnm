@@ -42,7 +42,7 @@ def test_qwen2_pretrained(require_model_path, source_repo, prompts, use_cache):
     hf_input_ids = tokenizer(prompts[0], return_tensors="pt")["input_ids"]
     nnm_input_ids = hf_input_ids.clone()
     hf_past_key_values = None
-    nnm_cache = Cache([KVCache() for _ in range(nnm_model.config.num_hidden_layers)]) if use_cache else None
+    nnm_cache = Cache([KVCache(2048) for _ in range(nnm_model.config.num_hidden_layers)]) if use_cache else None
 
     for turn_idx, prompt in enumerate(prompts):
         if turn_idx > 0:

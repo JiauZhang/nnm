@@ -3,7 +3,6 @@ from functools import partial
 from torch import nn
 
 from nnm.layers.attention import RotarySelfAttention
-from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.layers.transformer import TransformerBlock
@@ -43,11 +42,6 @@ class Qwen3Model(nn.Module):
 
     def forward(self, inputs_embeds, attn_mask=None, cache=None):
         cache_len = cache.get_seq_length() if cache is not None else 0
-        if attn_mask is not None:
-            batch, seq_len = attn_mask.shape
-            attn_mask = make_causal_mask(
-                seq_len, seq_len + cache_len, cache_len, attn_mask.device, attn_mask.dtype, attn_mask=attn_mask
-            )
         positions = torch.arange(cache_len, cache_len + inputs_embeds.shape[1], device=inputs_embeds.device)
         rotary_embeddings = self.position_encoder(positions)
         layers = cache.layers if cache is not None else [None] * len(self.layers)

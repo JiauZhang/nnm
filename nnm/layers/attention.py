@@ -2,6 +2,7 @@ import torch
 from torch import nn
 
 from nnm.backends.sdpa import scaled_dot_product_attention
+from nnm.cache.attention import SlidingWindowKVCache
 from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.rope import apply_rope, apply_rope_pairwise
 
@@ -18,42 +19,58 @@ def causal_attention(
     dropout_p=0.0,
     causal=True,
 ):
-    seq_len = query.shape[-2]
-    if (
-        cache is not None
-        and attn_mask is not None
-        and attn_mask.dim() == 2
-        and attn_mask.shape[-1] < cache.stored_length + seq_len
-    ):
-        padding = torch.ones(
-            attn_mask.shape[0],
-            cache.stored_length + seq_len - attn_mask.shape[-1],
-            device=attn_mask.device,
-            dtype=attn_mask.dtype,
-        )
-        attn_mask = torch.cat([padding, attn_mask], dim=-1)
-
-    cached = cache is not None
-    if cached:
-        cache_len = cache.stored_length
+    query_length = query.shape[-2]
+    if cache is not None:
         key, value = cache.update(key, value)
-    if cached or sliding_window is not None or attn_mask is not None:
-        if attn_mask is not None and attn_mask.dim() == 4:
-            mask = attn_mask
-        else:
-            mask = make_causal_mask(
-                seq_len,
-                key.shape[-2],
-                cache_len if cached else 0,
-                query.device,
-                query.dtype,
-                attn_mask=attn_mask,
-                sliding_window=sliding_window,
-            )
-        is_causal = False
-    else:
+    key_length = key.shape[-2]
+    stored_before = key_length - query_length
+    window = sliding_window
+    if window is None and isinstance(cache, SlidingWindowKVCache):
+        window = cache.window_size
+
+    decode_fast_path = (
+        cache is not None
+        and query_length == 1
+        and attn_mask is None
+        and (window is None or isinstance(cache, SlidingWindowKVCache))
+    )
+    training_fast_path = cache is None and attn_mask is None and window is None
+
+    if training_fast_path:
         mask = None
         is_causal = causal
+    elif decode_fast_path:
+        mask = None
+        is_causal = False
+    elif attn_mask is not None and attn_mask.dim() == 4:
+        mask = attn_mask
+        is_causal = False
+    else:
+        if attn_mask is not None:
+            if attn_mask.dtype == torch.bool:
+                attn_mask = attn_mask.to(query.dtype)
+            if attn_mask.dim() == 2:
+                if attn_mask.shape[-1] < key_length:
+                    padding = torch.ones(
+                        attn_mask.shape[0],
+                        key_length - attn_mask.shape[-1],
+                        device=attn_mask.device,
+                        dtype=attn_mask.dtype,
+                    )
+                    attn_mask = torch.cat([padding, attn_mask], dim=-1)
+                elif attn_mask.shape[-1] > key_length:
+                    attn_mask = attn_mask[..., -key_length:]
+        mask = make_causal_mask(
+            query_length,
+            key_length,
+            stored_before,
+            query.device,
+            query.dtype,
+            attn_mask=attn_mask,
+            sliding_window=window,
+            causal=causal,
+        )
+        is_causal = False
 
     output = scaled_dot_product_attention(
         query,

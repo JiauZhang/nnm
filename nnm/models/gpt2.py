@@ -3,7 +3,6 @@ from functools import partial
 from torch import nn
 
 from nnm.layers.attention import SelfAttention
-from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.mlp import MLP
 from nnm.layers.transformer import TransformerBlock
 from nnm.models.pretrained import PretrainedModel
@@ -43,12 +42,6 @@ class GPT2Model(nn.Module):
     def forward(self, input_ids, attn_mask=None, cache=None):
         batch, seq_len = input_ids.shape
         cache_len = cache.get_seq_length() if cache is not None else 0
-
-        if attn_mask is not None:
-            attn_mask = make_causal_mask(
-                seq_len, seq_len + cache_len, cache_len, attn_mask.device, attn_mask.dtype, attn_mask=attn_mask
-            )
-
         positions = torch.arange(cache_len, cache_len + seq_len, device=input_ids.device)
         h = self.token_embeds(input_ids) + self.position_embeds(positions)
 

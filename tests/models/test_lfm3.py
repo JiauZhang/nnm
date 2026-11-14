@@ -46,7 +46,9 @@ class TestLfm3:
     def test_incremental_decoding_matches_the_full_pass(self, layer_types):
         config = tiny_config(layer_types=layer_types)
         model = Lfm3LM(config).eval()
-        cache = Cache.from_layer_types(layer_types, window_size=config.sliding_window, state_size=config.conv_L_cache)
+        cache = Cache.from_layer_types(
+            layer_types, capacity=64, window_size=config.sliding_window, state_size=config.conv_L_cache
+        )
         input_ids = torch.randint(0, 100, (2, 10))
         with torch.no_grad():
             full = model(input_ids)

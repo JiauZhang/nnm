@@ -16,6 +16,9 @@ class CacheLayer(ABC):
     def is_empty(self) -> bool:
         pass
 
+    def reserve(self, capacity: int):
+        pass
+
     def get_seq_length(self) -> int:
         return 0
 
