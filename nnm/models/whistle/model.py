@@ -10,7 +10,6 @@ from .frontend import ConvStem, LogMel
 from .stacks import DecoderStack, EncoderStack
 from .tokenizer import WhistleTokenizer
 
-SAMPLE_RATE = 16000
 ENCODER_FRAME_MS = 80
 LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
 LANGUAGE_TOKENS = {f"<|{code}|>": code for code in LANGUAGES}
@@ -34,13 +33,13 @@ class Whistle(PretrainedModel):
 
     @torch.no_grad()
     def embed(self, audio):
-        return self.encoder(self.stem(self.mel(_samples(audio))))
+        return self.encoder(self.stem(self.mel(_samples(audio, self.config.sample_rate))))
 
     @torch.no_grad()
     def transcribe(self, audio, language=None, keywords=None, word_timestamps=False, beam=5, max_new_tokens=None):
         """The engine's needle_transcribe: text, language, timing, and word times when asked."""
         started = time.perf_counter()
-        samples = _samples(audio)
+        samples = _samples(audio, self.config.sample_rate)
         result = {"text": "", "language": "", "ttft_ms": 0.0, "decode_tps": 0.0}
         if word_timestamps:
             result["words"] = []
@@ -176,7 +175,7 @@ class Whistle(PretrainedModel):
         buffered, committed, detected = [], [], language
         received = 0.0
         for chunk in list(chunks) + [torch.zeros(0)]:
-            samples = _samples(chunk)
+            samples = _samples(chunk, self.config.sample_rate)
             started = time.perf_counter()
             tail = samples.numel() == 0
             if not tail:
@@ -296,15 +295,15 @@ def _has_speech(levels, threshold=5.0):
     return float(ordered[int((count - 1) * 0.99)] - ordered[int((count - 1) * 0.1)]) >= threshold
 
 
-def _samples(audio):
+def _samples(audio, sample_rate):
     if isinstance(audio, (str, os.PathLike)):
-        return _read_wav(os.fspath(audio))
+        return _read_wav(os.fspath(audio), sample_rate)
     if isinstance(audio, torch.Tensor):
         return audio.to(torch.float32).reshape(-1)
     return torch.from_numpy(np.asarray(audio, dtype=np.float32).reshape(-1))
 
 
-def _read_wav(path):
+def _read_wav(path, sample_rate):
     with wave.open(path, "rb") as source:
         if source.getsampwidth() != 2 or source.getcomptype() != "NONE":
             raise ValueError(f"{path} must be 16-bit PCM")
@@ -312,6 +311,6 @@ def _read_wav(path):
     values = np.frombuffer(raw, np.int16).astype(np.float32) / (1 << 15)
     if channels > 1:
         values = values.reshape(-1, channels).mean(1)
-    if rate != SAMPLE_RATE:
-        raise ValueError(f"{path} must be {SAMPLE_RATE} Hz")
+    if rate != sample_rate:
+        raise ValueError(f"{path} must be {sample_rate} Hz")
     return torch.from_numpy(values)

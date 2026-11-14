@@ -5,13 +5,10 @@ import torch.nn.functional as F
 from torch import nn
 
 from nnm.backends.sdpa import scaled_dot_product_attention
-from nnm.layers.dit import TimestepEmbedder
-from nnm.layers.rope import rotate_half
+from nnm.layers.dit import TimestepEmbedder, modulate
+from nnm.layers.norm import WeightOnlyLayerNorm
+from nnm.layers.rope import FusedQKVRoPE, apply_rope
 from nnm.models.pretrained import PretrainedModel
-
-
-def modulate(x, shift, scale):
-    return x * (1 + scale) + shift
 
 
 def block_diff_mask(q_idx, kv_idx, block_size, n):
@@ -29,44 +26,6 @@ def bias_dropout_add_scale(x, bias, scale, residual, prob, training):
     out = x + bias if bias is not None else x
     out = scale * F.dropout(out, p=prob, training=training)
     return residual + out if residual is not None else out
-
-
-class WeightOnlyLayerNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-        self.weight = nn.Parameter(torch.ones(dim))
-
-    def forward(self, x):
-        x = F.layer_norm(x.float(), [self.dim])
-        return x * self.weight[None, None, :]
-
-
-class Rotary(nn.Module):
-    def __init__(self, dim, base=10000):
-        super().__init__()
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
-        self.seq_len_cached = None
-        self.cos_cached = None
-        self.sin_cached = None
-
-    def forward(self, x, seq_dim=1):
-        seq_len = x.shape[seq_dim]
-        if seq_len != self.seq_len_cached:
-            self.seq_len_cached = seq_len
-            t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
-            freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            self.cos_cached = emb.cos()[None, :, None, None, :].repeat(1, 1, 3, 1, 1)
-            self.sin_cached = emb.sin()[None, :, None, None, :].repeat(1, 1, 3, 1, 1)
-            self.cos_cached[:, :, 2, :, :].fill_(1.0)
-            self.sin_cached[:, :, 2, :, :].fill_(0.0)
-        return self.cos_cached, self.sin_cached
-
-
-def apply_rotary_pos_emb(qkv, cos, sin):
-    return (qkv * cos) + (rotate_half(qkv) * sin)
 
 
 class EmbeddingLayer(nn.Module):
@@ -121,7 +80,7 @@ class DDiTBlock(nn.Module):
                 self.kv_cache[:, : -self.block_size] = self.kv_cache[:, self.block_size :].clone()
         qkv = qkv.view(qkv.shape[0], qkv.shape[1], 3, self.n_heads, -1)
         cos, sin = rotary_cos_sin
-        return apply_rotary_pos_emb(qkv, cos.to(qkv.dtype), sin.to(qkv.dtype))
+        return apply_rope(qkv, cos, sin)
 
     def cross_attn(self, qkv, mask=None):
         head_dim = qkv.shape[-1]
@@ -197,7 +156,7 @@ class DITBackbone(nn.Module):
         self.vocab_embed = EmbeddingLayer(config.hidden_size, config.vocab_size)
         if self.adaln:
             self.sigma_map = TimestepEmbedder(config.cond_dim)
-        self.rotary_emb = Rotary(config.hidden_size // config.num_attention_heads)
+        self.rotary_emb = FusedQKVRoPE(config.hidden_size // config.num_attention_heads)
         self.blocks = nn.ModuleList(
             [
                 DDiTBlock(

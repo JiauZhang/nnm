@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from nnm.layers.attention import ChannelAttention, WindowAttention
+from nnm.layers.vision.attention import ChannelAttention, WindowAttention
 from nnm.layers.drop import DropPath
 from nnm.layers.mlp import MLP
 from nnm.models.pretrained import PretrainedModel

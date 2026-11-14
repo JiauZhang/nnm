@@ -6,11 +6,12 @@ import torch.nn.functional as F
 from torch import nn
 
 from nnm.layers.activation import get_activation
-from nnm.layers.attention import window_partition_padded, window_unpartition_padded
+from nnm.layers.vision.attention import window_partition_padded, window_unpartition_padded
 from nnm.layers.norm import LayerNorm2d
 from nnm.layers.mlp import MLP
-from nnm.layers.transformer import VisionBlock
-from nnm.layers.vit import PatchEmbed2D, resize_abs_pos
+from nnm.layers.transformer import LayerScaleBlock
+from nnm.layers.grid import PatchEmbed2D
+from nnm.layers.vision.position import resize_abs_pos
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -244,7 +245,7 @@ class SamVisionEncoder(nn.Module):
         self.window_sizes = [0 if index in global_attn_indexes else window_size for index in range(depth)]
         self.layers = nn.ModuleList(
             [
-                VisionBlock(
+                LayerScaleBlock(
                     hidden_size,
                     SamRelativePositionAttention(
                         hidden_size,

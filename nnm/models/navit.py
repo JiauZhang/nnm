@@ -9,7 +9,7 @@ from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.rope import RoPE2D
 from nnm.layers.mlp import MLP
 from nnm.layers.transformer import TransformerBlock
-from nnm.layers.vit import merge_position_ids, resize_abs_pos
+from nnm.layers.vision.position import merge_position_ids, resize_abs_pos
 
 
 def smart_resize(height, width, factor, min_pixels, max_pixels):

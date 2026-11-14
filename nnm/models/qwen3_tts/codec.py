@@ -9,8 +9,8 @@ from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.mlp import GatedMLP, MLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.transformer import RotaryVisionBlock
-from nnm.layers.vit import LayerScale
+from nnm.layers.transformer import RotaryLayerScaleBlock
+from nnm.layers.scale import LayerScale
 from nnm.layers.vq import ResidualVectorQuantization
 from nnm.models.pretrained import PretrainedModel
 
@@ -127,7 +127,7 @@ class CodecTransformer(nn.Module):
         self.output_proj = nn.Linear(config.hidden_size, config.latent_dim)
         self.layers = nn.ModuleList(
             [
-                RotaryVisionBlock(
+                RotaryLayerScaleBlock(
                     config.hidden_size,
                     CodecAttention(config),
                     GatedMLP(config.hidden_size, config.intermediate_size),

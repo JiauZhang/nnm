@@ -6,8 +6,8 @@ from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.mlp import GatedMLP, MLP
 from nnm.layers.rope import RoPE, RopePositionEmbedding, rotary_inv_freq
-from nnm.layers.transformer import RotaryVisionBlock, TransformerBlock
-from nnm.layers.vit import PatchEmbed2D
+from nnm.layers.transformer import RotaryLayerScaleBlock, TransformerBlock
+from nnm.layers.grid import PatchEmbed2D
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -58,7 +58,7 @@ class PerceptionEncoderVision(nn.Module):
         qkv_bias = config.get("qkv_bias", False)
         self.layers = nn.ModuleList(
             [
-                RotaryVisionBlock(
+                RotaryLayerScaleBlock(
                     hidden_size,
                     RotarySelfAttention(
                         hidden_size,

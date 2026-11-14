@@ -1,7 +1,7 @@
 from torch import nn
 
 from nnm.layers.drop import DropPath
-from nnm.layers.vit import LayerScale
+from nnm.layers.scale import LayerScale
 
 
 class TransformerBlock(nn.Module):
@@ -38,7 +38,7 @@ class CrossTransformerBlock(nn.Module):
         return x + self.mlp(self.final_layer_norm(x))
 
 
-class VisionBlock(nn.Module):
+class LayerScaleBlock(nn.Module):
     def __init__(
         self,
         hidden_size,
@@ -67,7 +67,7 @@ class VisionBlock(nn.Module):
         return x + self.dropout(self.drop_path(self.ls2(self.mlp(self.norm2(x)))))
 
 
-class RotaryVisionBlock(VisionBlock):
+class RotaryLayerScaleBlock(LayerScaleBlock):
     def forward(self, x, rotary_embeddings=None, attn_mask=None, lengths=None):
         x = x + self.dropout(
             self.drop_path(

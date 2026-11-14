@@ -5,8 +5,8 @@ from torch import nn
 from nnm.layers.attention import SelfAttention
 from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.mlp import MLP
-from nnm.layers.transformer import TransformerBlock, VisionBlock
-from nnm.layers.vit import resize_abs_pos
+from nnm.layers.transformer import LayerScaleBlock, TransformerBlock
+from nnm.layers.vision.position import resize_abs_pos
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -91,7 +91,7 @@ class CLIPVisionModel(nn.Module):
         self.pre_layrnorm = nn.LayerNorm(hidden_size, eps=norm_eps)
         self.encoder = CLIPEncoder(
             [
-                VisionBlock(
+                LayerScaleBlock(
                     hidden_size,
                     SelfAttention(hidden_size, num_heads, qkv_bias=True, o_bias=True, causal=False),
                     MLP(hidden_size, intermediate_size, activation, bias=True),

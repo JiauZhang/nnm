@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 
 def rms_unit(x, eps=1e-6):
@@ -30,6 +31,17 @@ class LayerNorm2d(nn.Module):
         var = (x - mean).pow(2).mean(1, keepdim=True)
         x = (x - mean) / torch.sqrt(var + self.eps)
         return self.weight[:, None, None] * x + self.bias[:, None, None]
+
+
+class WeightOnlyLayerNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        x = F.layer_norm(x.float(), [self.dim])
+        return x * self.weight[None, None, :]
 
 
 class ZCRMSNorm(nn.Module):

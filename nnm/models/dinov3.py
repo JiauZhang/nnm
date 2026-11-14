@@ -5,8 +5,8 @@ from torch import nn
 from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.mlp import GatedMLP, MLP
 from nnm.layers.rope import RopePositionEmbedding
-from nnm.layers.transformer import RotaryVisionBlock
-from nnm.layers.vit import PatchEmbed2D
+from nnm.layers.transformer import RotaryLayerScaleBlock
+from nnm.layers.grid import PatchEmbed2D
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -37,7 +37,7 @@ def build_block(config, hidden_size, num_heads, head_dim, layerscale_init, drop_
         o_bias=config.get("proj_bias", True),
         causal=False,
     )
-    return RotaryVisionBlock(
+    return RotaryLayerScaleBlock(
         hidden_size,
         attention,
         build_block_ffn(config, hidden_size),

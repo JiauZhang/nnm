@@ -5,7 +5,7 @@ from torch import nn
 from nnm.models.pretrained import PretrainedModel
 
 
-class SqueezeExcitation(nn.Module):
+class MaskedSqueezeExcitation(nn.Module):
     def __init__(self, channels, reduced_channels):
         super().__init__()
         self.fc1 = nn.Conv1d(channels, reduced_channels, 1)
@@ -21,7 +21,7 @@ class ConvBlock(nn.Module):
         super().__init__()
         self.dw = nn.Conv1d(channels, channels, kernel_size, padding=kernel_size // 2, groups=channels)
         self.expand = nn.Conv1d(channels, expand_channels, 1)
-        self.se = SqueezeExcitation(expand_channels, reduced_channels)
+        self.se = MaskedSqueezeExcitation(expand_channels, reduced_channels)
         self.project = nn.Conv1d(expand_channels, channels, 1)
 
     def forward(self, x, mask, count):

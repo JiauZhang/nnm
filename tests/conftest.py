@@ -39,6 +39,36 @@ def reference_path(request):
     return request.config.getoption("--reference-path")
 
 
+@pytest.fixture(scope="module")
+def require_model_path(model_path):
+    if model_path is None:
+        pytest.skip("--model-path required")
+    return model_path
+
+
+@pytest.fixture(scope="module")
+def require_reference_path(reference_path):
+    if reference_path is None:
+        pytest.skip("--reference-path required")
+    return reference_path
+
+
+@pytest.fixture(scope="module")
+def load_pretrained(require_model_path):
+    def load(cls, **kwargs):
+        return cls.from_pretrained(require_model_path, **kwargs).eval()
+
+    return load
+
+
+@pytest.fixture(scope="session")
+def local_weights_root():
+    root = os.environ.get("NNM_WEIGHTS_ROOT")
+    if not root:
+        pytest.skip("NNM_WEIGHTS_ROOT is not set")
+    return Path(root)
+
+
 @pytest.fixture(scope="session")
 def weights_root(request):
     return request.config.getoption("--weights-root")

@@ -4,7 +4,7 @@ from torch import nn
 
 from nnm.layers.activation import get_activation
 from nnm.layers.norm import LayerNorm2d
-from nnm.layers.vit import LayerScale
+from nnm.layers.scale import LayerScale
 
 
 class CXBlock(nn.Module):

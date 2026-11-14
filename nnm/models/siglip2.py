@@ -4,8 +4,10 @@ from torch import nn
 
 from nnm.layers.attention import SelfAttention
 from nnm.layers.mlp import MLP
-from nnm.layers.transformer import TransformerBlock, VisionBlock
-from nnm.layers.vit import AttentionPool, PatchEmbed2D, resize_abs_pos
+from nnm.layers.transformer import LayerScaleBlock, TransformerBlock
+from nnm.layers.grid import PatchEmbed2D
+from nnm.layers.vision.pooling import AttentionPool
+from nnm.layers.vision.position import resize_abs_pos
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -97,7 +99,7 @@ class SigLIP2VisionModel(nn.Module):
         self.embeddings = SigLIP2VisionEmbeddings(config)
         self.encoder = nn.ModuleList(
             [
-                VisionBlock(
+                LayerScaleBlock(
                     hidden_size,
                     SelfAttention(
                         hidden_size,

@@ -1,10 +1,12 @@
 import math
+from functools import partial
 
 import torch
 from torch import nn
 
 from nnm.layers.attention import SelfAttention
 from nnm.layers.mlp import MLP
+from nnm.layers.norm import RMSNorm
 
 
 def timestep_embedding(timesteps, dim, max_period=10000):
@@ -55,7 +57,35 @@ class AdaLNModulation(nn.Module):
 
 
 def modulate(hidden, shift, scale):
-    return hidden * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return hidden * (1 + scale) + shift
+
+
+class JointAttention(nn.Module):
+    def __init__(self, hidden_size, num_heads, *, qkv_bias=True, o_bias=True, qk_norm=False, norm_eps=1e-6):
+        super().__init__()
+        self.attn = SelfAttention(
+            hidden_size,
+            num_heads,
+            head_dim=hidden_size // num_heads,
+            qkv_bias=qkv_bias,
+            o_bias=o_bias,
+            causal=False,
+            qk_norm=qk_norm,
+            norm_layer=partial(RMSNorm, eps=norm_eps),
+        )
+        self.num_heads = self.attn.num_heads
+        self.head_dim = self.attn.head_dim
+
+    def project(self, hidden):
+        batch, length, _ = hidden.shape
+        query, key, value = self.attn.project(hidden)
+        query = query.view(batch, length, self.num_heads, self.head_dim)
+        key = key.view(batch, length, self.num_heads, self.head_dim)
+        value = value.view(batch, length, self.num_heads, self.head_dim)
+        if self.attn.q_norm is not None:
+            query = self.attn.q_norm(query)
+            key = self.attn.k_norm(key)
+        return query.transpose(1, 2), key.transpose(1, 2), value.transpose(1, 2)
 
 
 class DiTBlock(nn.Module):
@@ -71,8 +101,8 @@ class DiTBlock(nn.Module):
 
     def forward(self, hidden, condition):
         shift_attn, scale_attn, gate_attn, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(condition).chunk(6, dim=1)
-        hidden = hidden + gate_attn.unsqueeze(1) * self.attn(modulate(self.norm1(hidden), shift_attn, scale_attn))
-        return hidden + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(hidden), shift_mlp, scale_mlp))
+        hidden = hidden + gate_attn[:, None] * self.attn(modulate(self.norm1(hidden), shift_attn[:, None], scale_attn[:, None]))
+        return hidden + gate_mlp[:, None] * self.mlp(modulate(self.norm2(hidden), shift_mlp[:, None], scale_mlp[:, None]))
 
 
 class FinalLayer(nn.Module):
@@ -84,4 +114,4 @@ class FinalLayer(nn.Module):
 
     def forward(self, hidden, condition):
         shift, scale = self.adaLN_modulation(condition).chunk(2, dim=1)
-        return self.linear(modulate(self.norm(hidden), shift, scale))
+        return self.linear(modulate(self.norm(hidden), shift[:, None], scale[:, None]))

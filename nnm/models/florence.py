@@ -1,4 +1,3 @@
-import math
 from functools import partial
 
 import torch
@@ -7,6 +6,7 @@ from torch import nn
 from nnm.layers.attention import CrossAttention, SelfAttention
 from nnm.layers.embedding import merge_placeholders
 from nnm.layers.mlp import MLP
+from nnm.layers.sinusoidal import sinusoidal_embedding
 from nnm.layers.transformer import CrossTransformerBlock, TransformerBlock
 from nnm.models.davit import DaViT
 from nnm.models.pretrained import PretrainedModel
@@ -71,17 +71,9 @@ class Florence2MultiModalProjector(nn.Module):
         self.image_proj_norm = nn.LayerNorm(projection_dim, eps=norm_eps)
         self.row_embeddings = nn.Embedding(max_positions, vision_dim // 2)
         self.column_embeddings = nn.Embedding(max_positions, vision_dim - vision_dim // 2)
-        self.register_buffer("temporal_embedding", self._cosine_embedding(max_temporal, vision_dim))
-
-    @staticmethod
-    def _cosine_embedding(max_positions, embed_dim):
-        half = embed_dim // 2
-        frequencies = torch.exp(torch.arange(half, dtype=torch.float32) * -(math.log(10000) / half))
-        angles = torch.arange(max_positions, dtype=torch.float32)[:, None] * frequencies[None]
-        embedding = torch.empty(max_positions, embed_dim)
-        embedding[:, 0::2] = angles.sin()
-        embedding[:, 1::2] = angles.cos()
-        return embedding
+        self.register_buffer(
+            "temporal_embedding", sinusoidal_embedding(torch.arange(max_temporal), vision_dim, interleaved=True)
+        )
 
     def _position_embedding(self, height, width, device):
         rows = self.row_embeddings(torch.arange(height, device=device))

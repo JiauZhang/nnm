@@ -1,42 +1,11 @@
 import torch
-from functools import partial
 from torch import nn
-from torch.nn import functional as F
 
-from nnm.layers.attention import SelfAttention
-from nnm.layers.dit import AdaLNModulation, FinalLayer, TimestepEmbedder, modulate
-from nnm.layers.norm import RMSNorm
+from nnm.backends.sdpa import scaled_dot_product_attention
+from nnm.layers.dit import AdaLNModulation, FinalLayer, JointAttention, TimestepEmbedder, modulate
+from nnm.layers.grid import PatchEmbed2D, unpatchify
 from nnm.layers.mlp import MLP
-from nnm.layers.vit import PatchEmbed2D
 from nnm.models.pretrained import PretrainedModel
-
-
-class JointAttention(nn.Module):
-    def __init__(self, hidden_size, num_heads, *, qkv_bias=True, o_bias=True, qk_norm=False, norm_eps=1e-6):
-        super().__init__()
-        self.attn = SelfAttention(
-            hidden_size,
-            num_heads,
-            head_dim=hidden_size // num_heads,
-            qkv_bias=qkv_bias,
-            o_bias=o_bias,
-            causal=False,
-            qk_norm=qk_norm,
-            norm_layer=partial(RMSNorm, eps=norm_eps),
-        )
-        self.num_heads = self.attn.num_heads
-        self.head_dim = self.attn.head_dim
-
-    def project(self, hidden):
-        batch, length, _ = hidden.shape
-        query, key, value = self.attn.project(hidden)
-        query = query.view(batch, length, self.num_heads, self.head_dim)
-        key = key.view(batch, length, self.num_heads, self.head_dim)
-        value = value.view(batch, length, self.num_heads, self.head_dim)
-        if self.attn.q_norm is not None:
-            query = self.attn.q_norm(query)
-            key = self.attn.k_norm(key)
-        return query.transpose(1, 2), key.transpose(1, 2), value.transpose(1, 2)
 
 
 class MMDiTBlock(nn.Module):
@@ -77,27 +46,27 @@ class MMDiTBlock(nn.Module):
         img_shift_attn, img_scale_attn, img_gate_attn, img_shift_mlp, img_scale_mlp, img_gate_mlp = img_mod
         txt_shift_attn, txt_scale_attn, txt_gate_attn, txt_shift_mlp, txt_scale_mlp, txt_gate_mlp = txt_mod
 
-        img_norm = modulate(self.img_norm1(hidden), img_shift_attn, img_scale_attn)
-        txt_norm = modulate(self.txt_norm1(context), txt_shift_attn, txt_scale_attn)
+        img_norm = modulate(self.img_norm1(hidden), img_shift_attn[:, None], img_scale_attn[:, None])
+        txt_norm = modulate(self.txt_norm1(context), txt_shift_attn[:, None], txt_scale_attn[:, None])
         img_q, img_k, img_v = self.img_attn.project(img_norm)
         txt_q, txt_k, txt_v = self.txt_attn.project(txt_norm)
 
         query = torch.cat([img_q, txt_q], dim=2)
         key = torch.cat([img_k, txt_k], dim=2)
         value = torch.cat([img_v, txt_v], dim=2)
-        output = F.scaled_dot_product_attention(query, key, value, scale=self.img_attn.head_dim**-0.5)
+        output = scaled_dot_product_attention(query, key, value, scale=self.img_attn.head_dim**-0.5)
         output = output.transpose(1, 2).reshape(query.shape[0], -1, query.shape[1] * query.shape[3])
         img_output, txt_output = output[:, : hidden.shape[1]], output[:, hidden.shape[1] :]
 
-        hidden = hidden + img_gate_attn.unsqueeze(1) * self.img_attn.attn.o_proj(img_output)
-        context = context + txt_gate_attn.unsqueeze(1) * self.txt_attn.attn.o_proj(txt_output)
+        hidden = hidden + img_gate_attn[:, None] * self.img_attn.attn.o_proj(img_output)
+        context = context + txt_gate_attn[:, None] * self.txt_attn.attn.o_proj(txt_output)
 
-        hidden = hidden + img_gate_mlp.unsqueeze(1) * self.img_mlp(
-            modulate(self.img_norm2(hidden), img_shift_mlp, img_scale_mlp)
+        hidden = hidden + img_gate_mlp[:, None] * self.img_mlp(
+            modulate(self.img_norm2(hidden), img_shift_mlp[:, None], img_scale_mlp[:, None])
         )
         if not self.context_pre_only:
-            context = context + txt_gate_mlp.unsqueeze(1) * self.txt_mlp(
-                modulate(self.txt_norm2(context), txt_shift_mlp, txt_scale_mlp)
+            context = context + txt_gate_mlp[:, None] * self.txt_mlp(
+                modulate(self.txt_norm2(context), txt_shift_mlp[:, None], txt_scale_mlp[:, None])
             )
         return hidden, context
 
@@ -161,7 +130,4 @@ class MMDiT(PretrainedModel):
         for block in self.blocks:
             hidden, context = block(hidden, context, condition)
         hidden = self.final_layer(hidden, condition)
-        batch = hidden.shape[0]
-        hidden = hidden.reshape(batch, height, width, self.patch_size, self.patch_size, self.out_channels)
-        hidden = hidden.permute(0, 5, 1, 3, 2, 4)
-        return hidden.reshape(batch, self.out_channels, height * self.patch_size, width * self.patch_size)
+        return unpatchify(hidden, (height * self.patch_size, width * self.patch_size), self.patch_size)

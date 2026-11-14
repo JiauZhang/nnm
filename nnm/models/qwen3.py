@@ -10,6 +10,27 @@ from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.layers.transformer import TransformerBlock
 
 
+def make_qwen3_layer(config, *, norm_layer=None):
+    head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+    norm_layer = norm_layer or partial(nn.RMSNorm, eps=config.rms_norm_eps, elementwise_affine=True)
+    attention = RotarySelfAttention(
+        config.hidden_size,
+        config.num_attention_heads,
+        config.num_key_value_heads,
+        head_dim,
+        qkv_bias=getattr(config, "attention_bias", False),
+        o_bias=getattr(config, "attention_bias", False),
+        qk_norm=True,
+        norm_layer=norm_layer,
+    )
+    return TransformerBlock(
+        config.hidden_size,
+        attention,
+        GatedMLP(config.hidden_size, config.intermediate_size),
+        norm_layer=norm_layer,
+    )
+
+
 class Qwen3Model(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -19,26 +40,9 @@ class Qwen3Model(nn.Module):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=self.padding_idx)
         head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.position_encoder = RoPE(rotary_inv_freq(head_dim, config.rope_theta))
-        self.layers = nn.ModuleList([self._make_layer(config, head_dim) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([make_qwen3_layer(config) for _ in range(config.num_hidden_layers)])
         self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.caches = [KVCache() for _ in range(config.num_hidden_layers)] if self.use_cache else None
-
-    def _make_layer(self, config, head_dim):
-        norm_layer = partial(nn.RMSNorm, eps=config.rms_norm_eps, elementwise_affine=True)
-        attention = RotarySelfAttention(
-            config.hidden_size,
-            config.num_attention_heads,
-            config.num_key_value_heads,
-            head_dim,
-            qk_norm=True,
-            norm_layer=norm_layer,
-        )
-        return TransformerBlock(
-            config.hidden_size,
-            attention,
-            GatedMLP(config.hidden_size, config.intermediate_size),
-            norm_layer=norm_layer,
-        )
 
     def forward(self, inputs_embeds, attn_mask=None):
         cache_len = self.caches[0].kv_len if self.use_cache and self.caches else 0

@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nnm.backends.sdpa import scaled_dot_product_attention as torch_sdpa
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, apply_rope, rotary_inv_freq
@@ -30,9 +31,9 @@ class ResidualBlock(nn.Module):
         return self.output(F.silu(self.hidden(x))) + self.residual(x)
 
 
-def scaled_dot_product_attention(query, key, value, mask, is_causal=False):
+def _sdpa(query, key, value, mask, is_causal=False):
     batch, seq_len, num_heads, head_dim = query.shape
-    out = F.scaled_dot_product_attention(
+    out = torch_sdpa(
         query.transpose(1, 2),
         key.transpose(1, 2),
         value.transpose(1, 2),
@@ -49,7 +50,7 @@ class TwoStreamMask:
         self.enc_len = enc_len
 
 
-class Attention(nn.Module):
+class TwoStreamAttention(nn.Module):
     def __init__(self, embed_dim, num_heads, is_time, bias, gate):
         super().__init__()
         self.embed_dim = embed_dim
@@ -69,13 +70,11 @@ class Attention(nn.Module):
             query, key = apply_rope(query, cos, sin, dim=2), apply_rope(key, cos, sin, dim=2)
         if isinstance(mask, TwoStreamMask):
             split = mask.enc_len
-            enc = scaled_dot_product_attention(
-                query[:, :split], key[:, :split], value[:, :split], mask.mask[:, :, :split, :split]
-            )
-            dec = scaled_dot_product_attention(query[:, split:], key, value, mask.mask[:, :, split:])
+            enc = _sdpa(query[:, :split], key[:, :split], value[:, :split], mask.mask[:, :, :split, :split])
+            dec = _sdpa(query[:, split:], key, value, mask.mask[:, :, split:])
             out = torch.cat([enc, dec], dim=1)
         else:
-            out = scaled_dot_product_attention(query, key, value, mask, is_causal=self.is_time and mask is None)
+            out = _sdpa(query, key, value, mask, is_causal=self.is_time and mask is None)
         if self.gate is not None:
             out = out * self.gate(hidden).sigmoid()
         out = (
@@ -86,13 +85,16 @@ class Attention(nn.Module):
         return self.out_proj(out)
 
 
-class TransformerBlock(nn.Module):
+class TwoStreamBlock(nn.Module):
     def __init__(self, kind, embed_dim, num_heads, mlp_hidden_dim, norm_eps, attn_bias, mlp_bias, time_gate, variate_gate):
         super().__init__()
         axes = LAYER_KINDS[kind]
         self.attn_norms = nn.ModuleList([RMSNorm(embed_dim, norm_eps) for _ in axes])
         self.attns = nn.ModuleList(
-            [Attention(embed_dim, num_heads, is_time, attn_bias, time_gate if is_time else variate_gate) for is_time in axes]
+            [
+                TwoStreamAttention(embed_dim, num_heads, is_time, attn_bias, time_gate if is_time else variate_gate)
+                for is_time in axes
+            ]
         )
         self.mlp_norm = RMSNorm(embed_dim, norm_eps)
         self.mlp = GatedMLP(embed_dim, mlp_hidden_dim, mlp_bias)
@@ -108,7 +110,7 @@ class Transformer(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList(
             [
-                TransformerBlock(
+                TwoStreamBlock(
                     kind=kind,
                     embed_dim=config.d_model,
                     num_heads=config.num_heads,

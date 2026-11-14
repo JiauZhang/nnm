@@ -5,8 +5,8 @@ from torch import nn
 
 from nnm.layers.attention import SelfAttention
 from nnm.layers.mlp import MLP
-from nnm.layers.transformer import VisionBlock
-from nnm.layers.vit import PatchEmbed2D
+from nnm.layers.transformer import LayerScaleBlock
+from nnm.layers.grid import PatchEmbed2D
 
 
 def vision_cu_seqlens(target_sizes):
@@ -48,7 +48,7 @@ def vision_window_index(target_sizes, window_side):
     return window_index, torch.unique_consecutive(cu_seqlens)
 
 
-class VisionLayer(VisionBlock):
+class VisionLayer(LayerScaleBlock):
     def __init__(self, *, hidden_size, intermediate_size, num_attention_heads, layer_norm_eps):
         super().__init__(
             hidden_size,

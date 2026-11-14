@@ -3,41 +3,16 @@ from functools import partial
 from torch import nn
 
 from nnm.cache import KVCache
-from nnm.layers.attention import RotarySelfAttention
-from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.transformer import TransformerBlock
 from nnm.models.pretrained import PretrainedModel
+from nnm.models.qwen3 import make_qwen3_layer
 
 
-def _make_layer(config):
-    head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-    attention = RotarySelfAttention(
-        config.hidden_size,
-        config.num_attention_heads,
-        config.num_key_value_heads,
-        head_dim,
-        qkv_bias=config.attention_bias,
-        o_bias=config.attention_bias,
-        qk_norm=True,
-        norm_layer=partial(RMSNorm, eps=config.rms_norm_eps),
-    )
-    return TransformerBlock(
-        config.hidden_size,
-        attention,
-        GatedMLP(config.hidden_size, config.intermediate_size),
-        norm_layer=partial(RMSNorm, eps=config.rms_norm_eps),
-    )
-
-
-class TalkerModel(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.text_embedding = nn.Embedding(config.text_vocab_size, config.text_hidden_size)
-        self.layers = nn.ModuleList([_make_layer(config) for _ in range(config.num_hidden_layers)])
+class _CachedStack(nn.Module):
+    def _init_stack(self, config):
+        norm_layer = partial(RMSNorm, eps=config.rms_norm_eps)
+        self.layers = nn.ModuleList([make_qwen3_layer(config, norm_layer=norm_layer) for _ in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.rotary_emb = RoPE(rotary_inv_freq(head_dim, config.rope_theta))
@@ -54,8 +29,8 @@ class TalkerModel(nn.Module):
                 cache.clear()
         self.position_offset = 0
 
-    def forward(self, inputs_embeds, attn_mask=None, use_cache=False):
-        batch, seq_len = inputs_embeds.shape[:2]
+    def _forward_stack(self, inputs_embeds, attn_mask=None, use_cache=False):
+        seq_len = inputs_embeds.shape[1]
         offset = self.position_offset
         positions = torch.arange(offset, offset + seq_len, device=inputs_embeds.device)
         cos, sin = self.rotary_emb(positions)
@@ -72,6 +47,18 @@ class TalkerModel(nn.Module):
         return self.norm(hidden)
 
 
+class TalkerModel(_CachedStack):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.text_embedding = nn.Embedding(config.text_vocab_size, config.text_hidden_size)
+        self._init_stack(config)
+
+    def forward(self, inputs_embeds, attn_mask=None, use_cache=False):
+        return self._forward_stack(inputs_embeds, attn_mask=attn_mask, use_cache=use_cache)
+
+
 class TextProjection(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -83,45 +70,17 @@ class TextProjection(nn.Module):
         return self.linear_fc2(self.act_fn(self.linear_fc1(x)))
 
 
-class CodePredictorModel(nn.Module):
+class CodePredictorModel(_CachedStack):
     def __init__(self, config, hidden_size):
         super().__init__()
         self.config = config
-        self.layers = nn.ModuleList([_make_layer(config) for _ in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        self.rotary_emb = RoPE(rotary_inv_freq(head_dim, config.rope_theta))
         self.codec_embedding = nn.ModuleList(
             [nn.Embedding(config.vocab_size, hidden_size) for _ in range(config.num_code_groups - 1)]
         )
-        self.caches = None
-        self.position_offset = 0
-
-    def prepare_cache(self):
-        self.caches = [KVCache() for _ in range(len(self.layers))]
-        self.position_offset = 0
-
-    def clear_cache(self):
-        if self.caches:
-            for cache in self.caches:
-                cache.clear()
-        self.position_offset = 0
+        self._init_stack(config)
 
     def forward(self, inputs_embeds, use_cache=False):
-        seq_len = inputs_embeds.shape[1]
-        offset = self.position_offset
-        positions = torch.arange(offset, offset + seq_len, device=inputs_embeds.device)
-        cos, sin = self.rotary_emb(positions)
-        hidden = inputs_embeds
-        for index, layer in enumerate(self.layers):
-            hidden = layer(
-                hidden,
-                rotary_embeddings=(cos, sin),
-                cache=self.caches[index] if use_cache else None,
-            )
-        if use_cache:
-            self.position_offset += seq_len
-        return self.norm(hidden)
+        return self._forward_stack(inputs_embeds, use_cache=use_cache)
 
 
 class CodePredictor(nn.Module):

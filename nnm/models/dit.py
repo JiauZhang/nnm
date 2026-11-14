@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from nnm.layers.dit import DiTBlock, FinalLayer, TimestepEmbedder
-from nnm.layers.vit import PatchEmbed2D
+from nnm.layers.grid import PatchEmbed2D, unpatchify
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -40,7 +40,4 @@ class DiT(PretrainedModel):
         for block in self.blocks:
             hidden = block(hidden, condition)
         hidden = self.final_layer(hidden, condition)
-        batch, _, _ = hidden.shape
-        hidden = hidden.reshape(batch, height, width, self.patch_size, self.patch_size, self.out_channels)
-        hidden = hidden.permute(0, 5, 1, 3, 2, 4)
-        return hidden.reshape(batch, self.out_channels, height * self.patch_size, width * self.patch_size)
+        return unpatchify(hidden, (height * self.patch_size, width * self.patch_size), self.patch_size)

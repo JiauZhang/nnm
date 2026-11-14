@@ -4,7 +4,7 @@ from nnm.layers.conv import ConvFFN, ConvNormAct
 from nnm.layers.drop import DropPath
 from nnm.layers.se import SqueezeExcitation
 from nnm.layers.attention import SelfAttention
-from nnm.layers.vit import LayerScale
+from nnm.layers.scale import LayerScale
 from nnm.models.pretrained import PretrainedModel
 
 

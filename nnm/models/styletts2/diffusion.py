@@ -1,7 +1,6 @@
 import math
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from .blocks import AdaLayerNorm
@@ -44,7 +43,7 @@ class RelativePositionBias(nn.Module):
         return bias.permute(2, 0, 1)[None]
 
 
-class AttentionBase(nn.Module):
+class DiffusionAttentionBase(nn.Module):
     def __init__(
         self,
         features,
@@ -81,7 +80,7 @@ class AttentionBase(nn.Module):
         return self.to_out(out)
 
 
-class Attention(nn.Module):
+class DiffusionAttention(nn.Module):
     def __init__(
         self,
         features,
@@ -102,7 +101,7 @@ class Attention(nn.Module):
         self.norm_context = nn.LayerNorm(context_features)
         self.to_q = nn.Linear(features, mid_features, bias=False)
         self.to_kv = nn.Linear(context_features, mid_features * 2, bias=False)
-        self.attention = AttentionBase(
+        self.attention = DiffusionAttentionBase(
             features,
             out_features=out_features,
             num_heads=num_heads,
@@ -141,7 +140,7 @@ class StyleAttention(nn.Module):
         self.norm_context = AdaLayerNorm(style_dim, context_features)
         self.to_q = nn.Linear(features, mid_features, bias=False)
         self.to_kv = nn.Linear(context_features, mid_features * 2, bias=False)
-        self.attention = AttentionBase(
+        self.attention = DiffusionAttentionBase(
             features,
             num_heads=num_heads,
             head_features=head_features,
@@ -158,7 +157,7 @@ class StyleAttention(nn.Module):
         return self.attention(q, k, v)
 
 
-class TransformerBlock(nn.Module):
+class DiffusionTransformerBlock(nn.Module):
     def __init__(
         self,
         features,
@@ -172,7 +171,7 @@ class TransformerBlock(nn.Module):
     ):
         super().__init__()
         self.use_cross_attention = context_features is not None and context_features > 0
-        self.attention = Attention(
+        self.attention = DiffusionAttention(
             features,
             num_heads=num_heads,
             head_features=head_features,
@@ -181,7 +180,7 @@ class TransformerBlock(nn.Module):
             rel_pos_max_distance=rel_pos_max_distance,
         )
         if self.use_cross_attention:
-            self.cross_attention = Attention(
+            self.cross_attention = DiffusionAttention(
                 features,
                 num_heads=num_heads,
                 head_features=head_features,
@@ -259,7 +258,7 @@ def TimePositionalEmbedding(dim, out_features):
     return nn.Sequential(LearnedPositionalEmbedding(dim), nn.Linear(dim + 1, out_features))
 
 
-class FixedEmbedding(nn.Module):
+class DiffusionFixedEmbedding(nn.Module):
     def __init__(self, max_length, features):
         super().__init__()
         self.max_length = max_length
@@ -287,7 +286,7 @@ class _Transformer1dBase(nn.Module):
             self.to_time = nn.Sequential(TimePositionalEmbedding(channels, context_mapping_features), nn.GELU())
         if self.use_context_features:
             self.to_features = nn.Sequential(nn.Linear(context_features, context_mapping_features), nn.GELU())
-        self.fixed_embedding = FixedEmbedding(embedding_max_length, context_embedding_features)
+        self.fixed_embedding = DiffusionFixedEmbedding(embedding_max_length, context_embedding_features)
 
     def get_mapping(self, time=None, features=None):
         items = []
@@ -323,7 +322,7 @@ class _Transformer1dBase(nn.Module):
         return self.run(x, time, embedding=embedding, features=features)
 
 
-class Transformer1d(_Transformer1dBase):
+class DiffusionTransformer1d(_Transformer1dBase):
     def __init__(
         self,
         num_layers,
@@ -342,7 +341,7 @@ class Transformer1d(_Transformer1dBase):
         super().__init__()
         self.blocks = nn.ModuleList(
             [
-                TransformerBlock(
+                DiffusionTransformerBlock(
                     channels + context_embedding_features,
                     num_heads,
                     head_features,
@@ -398,185 +397,6 @@ class StyleTransformer1d(_Transformer1dBase):
 
     def run(self, x, time, embedding, features):
         return self._run(x, time, embedding, features, lambda block, x, feats: block(x, feats))
-
-
-class LogNormalDistribution:
-    def __init__(self, mean, std):
-        self.mean = mean
-        self.std = std
-
-    def __call__(self, num_samples, device=torch.device("cpu")):
-        return (self.mean + self.std * torch.randn((num_samples,), device=device)).exp()
-
-
-class UniformDistribution:
-    def __call__(self, num_samples, device=torch.device("cpu")):
-        return torch.rand(num_samples, device=device)
-
-
-def _to_batch(batch_size, device, x=None, xs=None):
-    if x is not None:
-        return torch.full((batch_size,), fill_value=x, device=device)
-    return xs
-
-
-class KDiffusion(nn.Module):
-    def __init__(self, net, *, sigma_distribution, sigma_data, dynamic_threshold=0.0):
-        super().__init__()
-        self.net = net
-        self.sigma_data = sigma_data
-        self.sigma_distribution = sigma_distribution
-        self.dynamic_threshold = dynamic_threshold
-
-    def get_scale_weights(self, sigmas):
-        sigma_data = self.sigma_data
-        c_noise = torch.log(sigmas) * 0.25
-        sigmas = sigmas[:, None, None]
-        c_skip = (sigma_data**2) / (sigmas**2 + sigma_data**2)
-        c_out = sigmas * sigma_data * (sigma_data**2 + sigmas**2) ** -0.5
-        c_in = (sigmas**2 + sigma_data**2) ** -0.5
-        return c_skip, c_out, c_in, c_noise
-
-    def denoise_fn(self, x_noisy, sigmas=None, sigma=None, **kwargs):
-        sigmas = _to_batch(x_noisy.shape[0], x_noisy.device, x=sigma, xs=sigmas)
-        c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas)
-        x_pred = self.net(c_in * x_noisy, c_noise, **kwargs)
-        return c_skip * x_noisy + c_out * x_pred
-
-    def loss_weight(self, sigmas):
-        return (sigmas**2 + self.sigma_data**2) * (sigmas * self.sigma_data) ** -2
-
-    def forward(self, x, noise=None, **kwargs):
-        batch_size, device = x.shape[0], x.device
-        sigmas = self.sigma_distribution(num_samples=batch_size, device=device)
-        noise = torch.randn_like(x) if noise is None else noise
-        x_noisy = x + sigmas[:, None, None] * noise
-        x_denoised = self.denoise_fn(x_noisy, sigmas=sigmas, **kwargs)
-        losses = F.mse_loss(x_denoised, x, reduction="none").flatten(1).mean(1)
-        return (losses * self.loss_weight(sigmas)).mean()
-
-    def sample(self, noise, num_steps=5, **kwargs):
-        sampler = DiffusionSampler(
-            self, sampler=ADPM2Sampler(), sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0), clamp=False
-        )
-        return sampler(noise, num_steps=num_steps, **kwargs)
-
-
-class LinearSchedule(nn.Module):
-    def forward(self, num_steps, device):
-        return torch.linspace(1, 0, num_steps + 1)[:-1]
-
-
-class KarrasSchedule(nn.Module):
-    def __init__(self, sigma_min, sigma_max, rho=7.0):
-        super().__init__()
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
-        self.rho = rho
-
-    def forward(self, num_steps, device):
-        rho_inv = 1.0 / self.rho
-        steps = torch.arange(num_steps, device=device, dtype=torch.float32)
-        sigmas = (
-            self.sigma_max**rho_inv + (steps / (num_steps - 1)) * (self.sigma_min**rho_inv - self.sigma_max**rho_inv)
-        ) ** self.rho
-        return F.pad(sigmas, pad=(0, 1), value=0.0)
-
-
-class VSampler(nn.Module):
-    def get_alpha_beta(self, sigma):
-        angle = sigma * math.pi / 2
-        return math.cos(angle), math.sin(angle)
-
-    def forward(self, noise, fn, sigmas, num_steps):
-        x = sigmas[0] * noise
-        alpha, beta = self.get_alpha_beta(sigmas[0].item())
-        for i in range(num_steps - 1):
-            is_last = i == num_steps - 1
-            x_denoised = fn(x, sigma=sigmas[i])
-            x_pred = x * alpha - x_denoised * beta
-            x_eps = x * beta + x_denoised * alpha
-            if not is_last:
-                alpha, beta = self.get_alpha_beta(sigmas[i + 1].item())
-                x = x_pred * alpha + x_eps * beta
-        return x_pred
-
-
-class KarrasSampler(nn.Module):
-    def __init__(self, s_tmin=0, s_tmax=float("inf"), s_churn=0.0, s_noise=1.0):
-        super().__init__()
-        self.s_tmin = s_tmin
-        self.s_tmax = s_tmax
-        self.s_noise = s_noise
-        self.s_churn = s_churn
-
-    def step(self, x, fn, sigma, sigma_next, gamma):
-        sigma_hat = sigma + gamma * sigma
-        epsilon = self.s_noise * torch.randn_like(x)
-        x_hat = x + math.sqrt(sigma_hat**2 - sigma**2) * epsilon
-        d = (x_hat - fn(x_hat, sigma=sigma_hat)) / sigma_hat
-        x_next = x_hat + (sigma_next - sigma_hat) * d
-        if sigma_next != 0:
-            model_out_next = fn(x_next, sigma=sigma_next)
-            d_prime = (x_next - model_out_next) / sigma_next
-            x_next = x_hat + 0.5 * (sigma - sigma_hat) * (d + d_prime)
-        return x_next
-
-    def forward(self, noise, fn, sigmas, num_steps):
-        x = sigmas[0] * noise
-        gammas = torch.where(
-            (sigmas >= self.s_tmin) & (sigmas <= self.s_tmax), min(self.s_churn / num_steps, math.sqrt(2) - 1), 0.0
-        )
-        for i in range(num_steps - 1):
-            x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1], gamma=gammas[i])
-        return x
-
-
-class ADPM2Sampler(nn.Module):
-    def __init__(self, rho=1.0):
-        super().__init__()
-        self.rho = rho
-
-    def get_sigmas(self, sigma, sigma_next):
-        r = self.rho
-        sigma_up = math.sqrt(sigma_next**2 * (sigma**2 - sigma_next**2) / sigma**2)
-        sigma_down = math.sqrt(sigma_next**2 - sigma_up**2)
-        sigma_mid = ((sigma ** (1 / r) + sigma_down ** (1 / r)) / 2) ** r
-        return sigma_up, sigma_down, sigma_mid
-
-    def step(self, x, fn, sigma, sigma_next):
-        sigma_up, sigma_down, sigma_mid = self.get_sigmas(sigma, sigma_next)
-        d = (x - fn(x, sigma=sigma)) / sigma
-        x_mid = x + d * (sigma_mid - sigma)
-        d_mid = (x_mid - fn(x_mid, sigma=sigma_mid)) / sigma_mid
-        x = x + d_mid * (sigma_down - sigma)
-        return x + torch.randn_like(x) * sigma_up
-
-    def forward(self, noise, fn, sigmas, num_steps):
-        x = sigmas[0] * noise
-        for i in range(num_steps - 1):
-            x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])
-        return x
-
-
-class DiffusionSampler(nn.Module):
-    def __init__(self, diffusion, *, sampler, sigma_schedule, num_steps=None, clamp=True):
-        super().__init__()
-        self.denoise_fn = diffusion.denoise_fn
-        self.sampler = sampler
-        self.sigma_schedule = sigma_schedule
-        self.num_steps = num_steps
-        self.clamp = clamp
-
-    def forward(self, noise, num_steps=None, **kwargs):
-        num_steps = self.num_steps if num_steps is None else num_steps
-        sigmas = self.sigma_schedule(num_steps, noise.device)
-
-        def fn(*a, **ka):
-            return self.denoise_fn(*a, **{**ka, **kwargs})
-
-        x = self.sampler(noise, fn=fn, sigmas=sigmas, num_steps=num_steps)
-        return x.clamp(-1.0, 1.0) if self.clamp else x
 
 
 class AudioDiffusionConditional(nn.Module):

@@ -40,6 +40,29 @@ class RoPE(nn.Module):
         return embedding.cos() * self.scaling, embedding.sin() * self.scaling
 
 
+class FusedQKVRoPE(nn.Module):
+    def __init__(self, head_dim, num_streams=3, base=10000):
+        super().__init__()
+        self.num_streams = num_streams
+        self.register_buffer("inv_freq", rotary_inv_freq(head_dim, base))
+        self.seq_len_cached = None
+        self.cos_cached = None
+        self.sin_cached = None
+
+    def forward(self, x, seq_dim=1):
+        seq_len = x.shape[seq_dim]
+        if seq_len != self.seq_len_cached:
+            self.seq_len_cached = seq_len
+            t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
+            freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
+            self.cos_cached = emb.cos()[None, :, None, None, :].repeat(1, 1, self.num_streams, 1, 1)
+            self.sin_cached = emb.sin()[None, :, None, None, :].repeat(1, 1, self.num_streams, 1, 1)
+            self.cos_cached[:, :, 2, :, :].fill_(1.0)
+            self.sin_cached[:, :, 2, :, :].fill_(0.0)
+        return self.cos_cached, self.sin_cached
+
+
 class RopePositionEmbedding(nn.Module):
     def __init__(self, dim, num_heads, base=100.0, min_period=None, max_period=None, normalize_coords="separate"):
         super().__init__()

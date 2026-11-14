@@ -9,7 +9,7 @@ class LogMel(nn.Module):
 
     def __init__(self, config, floor=1e-10):
         super().__init__()
-        self.sample_rate = getattr(config, "sample_rate", 16000)
+        self.sample_rate = config.sample_rate
         self.n_fft = config.n_fft
         self.win_length = getattr(config, "win_length", 400)
         self.hop_length = getattr(config, "hop_length", 160)

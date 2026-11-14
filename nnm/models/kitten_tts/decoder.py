@@ -1,5 +1,4 @@
 import math
-import random
 
 import torch
 import torch.nn.functional as F
@@ -7,6 +6,7 @@ from torch import nn
 from torch.nn.utils import weight_norm
 
 from ..styletts2.blocks import AdainResBlk1d
+from ..styletts2.decoder import DecoderBase
 from ..styletts2.vocoder import AdaINResBlock1, SourceModuleHnNSF
 
 
@@ -145,7 +145,7 @@ class Generator(nn.Module):
         return self.stft.inverse(spec, phase)
 
 
-class Decoder(nn.Module):
+class Decoder(DecoderBase):
     def __init__(
         self,
         dim_in,
@@ -194,28 +194,3 @@ class Decoder(nn.Module):
             magnitude_activation=magnitude_activation,
             window_float64=window_float64,
         )
-
-    def forward(self, asr, F0_curve, N, style):
-        if self.training and self.training_downsample:
-            F0_down = random.choice([0, 3, 7])
-            N_down = random.choice([0, 3, 7, 15])
-            if F0_down:
-                kernel = torch.ones(1, 1, F0_down, device=F0_curve.device, dtype=F0_curve.dtype)
-                F0_curve = F.conv1d(F0_curve.unsqueeze(1), kernel, padding=F0_down // 2).squeeze(1) / F0_down
-            if N_down:
-                kernel = torch.ones(1, 1, N_down, device=N.device, dtype=N.dtype)
-                N = F.conv1d(N.unsqueeze(1), kernel, padding=N_down // 2).squeeze(1) / N_down
-
-        F0 = self.F0_conv(F0_curve.unsqueeze(1))
-        N = self.N_conv(N.unsqueeze(1))
-        x = torch.cat([asr, F0, N], axis=1)
-        x = self.encode(x, style)
-        asr_res = self.asr_res(asr)
-        res = True
-        for block in self.decode:
-            if res:
-                x = torch.cat([x, asr_res, F0, N], axis=1)
-            x = block(x, style)
-            if block.upsample_type != "none":
-                res = False
-        return self.generator(x, style, F0_curve)

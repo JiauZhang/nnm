@@ -7,19 +7,14 @@ import torch.nn.functional as F
 from torch import nn
 from torchvision.ops import box_convert, roi_align
 
-from nnm.layers.attention import (
-    CrossAttention,
-    InterleavedRotarySelfAttention,
-    SelfAttention,
-    window_partition_padded,
-    window_unpartition_padded,
-)
+from nnm.layers.attention import CrossAttention, InterleavedRotarySelfAttention, SelfAttention
 from nnm.layers.conv import CXBlock
 from nnm.layers.mlp import MLP
 from nnm.layers.norm import LayerNorm2d
 from nnm.layers.rope import axial_rope_cos_sin
 from nnm.layers.sinusoidal import sinusoidal_embedding
-from nnm.layers.transformer import CrossTransformerBlock, RotaryVisionBlock, TransformerBlock
+from nnm.layers.transformer import CrossTransformerBlock, RotaryLayerScaleBlock, TransformerBlock
+from nnm.layers.vision.attention import window_partition_padded, window_unpartition_padded
 from nnm.models.detr import DetrSinePositionEmbedding, inverse_sigmoid
 from nnm.models.pretrained import PretrainedModel
 
@@ -57,7 +52,7 @@ class Sam3VisionLayer(nn.Module):
         self.window_size = window_size
         self.rope_theta = config.get("rope_theta", 10000.0)
         self.rope_scale = global_window / grid if window_size == 0 else 1.0
-        self.block = RotaryVisionBlock(
+        self.block = RotaryLayerScaleBlock(
             hidden_size,
             InterleavedRotarySelfAttention(
                 hidden_size,

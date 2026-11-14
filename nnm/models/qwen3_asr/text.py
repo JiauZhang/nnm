@@ -3,11 +3,9 @@ from functools import partial
 from torch import nn
 
 from nnm.cache import KVCache
-from nnm.layers.attention import RotarySelfAttention
-from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.layers.transformer import TransformerBlock
+from nnm.models.qwen3 import make_qwen3_layer
 
 
 class Qwen3ASRTextModel(nn.Module):
@@ -15,30 +13,11 @@ class Qwen3ASRTextModel(nn.Module):
         super().__init__()
         self.config = config
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
-        self.layers = nn.ModuleList([self._make_layer(config) for _ in range(config.num_hidden_layers)])
+        norm_layer = partial(RMSNorm, eps=config.rms_norm_eps)
+        self.layers = nn.ModuleList([make_qwen3_layer(config, norm_layer=norm_layer) for _ in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.rotary = RoPE(rotary_inv_freq(config.head_dim, config.rope_theta))
         self.caches = None
-
-    @staticmethod
-    def _make_layer(config):
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        attention = RotarySelfAttention(
-            config.hidden_size,
-            config.num_attention_heads,
-            config.num_key_value_heads,
-            head_dim,
-            qkv_bias=config.attention_bias,
-            o_bias=config.attention_bias,
-            qk_norm=True,
-            norm_layer=partial(RMSNorm, eps=config.rms_norm_eps),
-        )
-        return TransformerBlock(
-            config.hidden_size,
-            attention,
-            GatedMLP(config.hidden_size, config.intermediate_size),
-            norm_layer=partial(RMSNorm, eps=config.rms_norm_eps),
-        )
 
     def prepare_cache(self):
         self.caches = [KVCache() for _ in self.layers]

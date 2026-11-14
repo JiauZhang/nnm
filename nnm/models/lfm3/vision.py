@@ -8,7 +8,7 @@ from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE2D
-from nnm.layers.vit import merge_position_ids
+from nnm.layers.vision.position import merge_position_ids
 
 
 def vision_inv_freq(config):

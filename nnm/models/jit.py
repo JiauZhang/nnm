@@ -8,7 +8,7 @@ from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import LearnableRoPE2D
 from nnm.layers.transformer import TransformerBlock
-from nnm.layers.vit import patchify, unpatchify
+from nnm.layers.grid import patchify, unpatchify
 from nnm.models.pretrained import PretrainedModel
 
 

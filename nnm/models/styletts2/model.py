@@ -1,11 +1,13 @@
 import torch
 from torch import nn
 
+from nnm.layers.diffusion.kdiffusion import KDiffusion
+from nnm.layers.diffusion.schedule import LogNormalDistribution
 from nnm.models.albert import AlbertModel
 from nnm.models.pretrained import PretrainedModel
 
 from .decoder import Decoder
-from .diffusion import AudioDiffusionConditional, KDiffusion, LogNormalDistribution, StyleTransformer1d, Transformer1d
+from .diffusion import AudioDiffusionConditional, DiffusionTransformer1d, StyleTransformer1d
 from .predictor import ProsodyPredictor
 from .style_encoder import StyleEncoder
 from .text_encoder import TextEncoder
@@ -45,7 +47,7 @@ class StyleTTS2(PretrainedModel):
         )
 
         diff = config.diffusion
-        transformer_cls = StyleTransformer1d if config.multispeaker else Transformer1d
+        transformer_cls = StyleTransformer1d if config.multispeaker else DiffusionTransformer1d
         context_features = style_dim * 2 if config.multispeaker else None
         transformer = transformer_cls(
             channels=style_dim * 2,

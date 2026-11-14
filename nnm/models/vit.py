@@ -4,8 +4,9 @@ from torch import nn
 
 from nnm.layers.attention import SelfAttention
 from nnm.layers.mlp import MLP
-from nnm.layers.transformer import VisionBlock
-from nnm.layers.vit import PatchEmbed2D, resize_abs_pos
+from nnm.layers.transformer import LayerScaleBlock
+from nnm.layers.grid import PatchEmbed2D
+from nnm.layers.vision.position import resize_abs_pos
 from nnm.models.pretrained import PretrainedModel
 
 
@@ -58,7 +59,7 @@ class ViT(PretrainedModel):
         self.embeddings = ViTEmbeddings(config)
         self.layers = nn.ModuleList(
             [
-                VisionBlock(
+                LayerScaleBlock(
                     hidden_size,
                     SelfAttention(
                         hidden_size,
