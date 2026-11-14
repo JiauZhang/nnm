@@ -35,15 +35,9 @@ class Lfm3VlModel(PretrainedModel):
             inputs_embeds = merge_placeholders(inputs_embeds, input_ids == self.image_token_id, image_features)
         return inputs_embeds
 
-    def forward(self, input_ids, pixel_values=None, image_grid_thw=None, attn_mask=None):
+    def forward(self, input_ids, pixel_values=None, image_grid_thw=None, attn_mask=None, cache=None):
         inputs_embeds = self.embed_inputs(input_ids, pixel_values, image_grid_thw)
-        hidden_states = self.backbone(inputs_embeds=inputs_embeds, attn_mask=attn_mask)
+        hidden_states = self.backbone(inputs_embeds=inputs_embeds, attn_mask=attn_mask, cache=cache)
         if self.lm_head is not None:
             return self.lm_head(hidden_states)
         return torch.matmul(hidden_states, self.backbone.embed_tokens.weight.t())
-
-    def clear_cache(self):
-        if self.backbone.caches:
-            for cache in self.backbone.caches:
-                cache.clear()
-        self.backbone.position_offset = 0

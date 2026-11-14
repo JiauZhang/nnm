@@ -51,7 +51,6 @@ def reference():
             "pad_token_id": 1,
             "bos_token_id": 2,
             "eos_token_id": 3,
-            "use_cache": False,
         }.items():
             setattr(config, key, value)
         config._attn_implementation = "eager"
@@ -61,7 +60,7 @@ def reference():
 
 
 def test_matches_the_upstream_model(reference):
-    model = Lfm3LM(tiny_config(use_cache=False)).eval()
+    model = Lfm3LM(tiny_config()).eval()
     state = {
         key.replace("model.", "backbone.", 1): value
         for key, value in reference.state_dict().items()

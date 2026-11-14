@@ -86,11 +86,10 @@ class ResBlock2D(nn.Module):
 
 
 class ShortConv(nn.Module):
-    def __init__(self, hidden_size, kernel_size, bias=False, use_cache=False):
+    def __init__(self, hidden_size, kernel_size, bias=False):
         super().__init__()
         self.hidden_size = hidden_size
         self.kernel_size = kernel_size
-        self.use_cache = use_cache
         self.conv = nn.Conv1d(
             hidden_size,
             hidden_size,
@@ -111,7 +110,7 @@ class ShortConv(nn.Module):
         if attn_mask is not None:
             hidden = hidden * attn_mask[:, None, :].to(hidden.dtype)
 
-        if self.use_cache and cache is not None:
+        if cache is not None:
             previous = None if cache.is_empty() else cache.state
             combined = hidden if previous is None else torch.cat([previous, hidden], dim=-1)
             combined = F.pad(combined, (self.kernel_size - 1, 0))

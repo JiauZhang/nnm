@@ -272,18 +272,13 @@ class Lfm3AudioModel(PretrainedModel):
         feature_attention_mask=None,
         audio_out_codes=None,
         attn_mask=None,
+        cache=None,
     ):
         inputs_embeds = self.embed_inputs(input_ids, input_features, feature_attention_mask, audio_out_codes)
-        hidden = self.backbone(inputs_embeds=inputs_embeds, attn_mask=attn_mask)
+        hidden = self.backbone(inputs_embeds=inputs_embeds, attn_mask=attn_mask, cache=cache)
         if self.lm_head is not None:
             return self.lm_head(hidden)
         return torch.matmul(hidden, self.backbone.embed_tokens.weight.t())
 
     def audio_loss(self, hidden_states, input_ids, audio_labels):
         return self.audio.loss(hidden_states, input_ids, audio_labels)
-
-    def clear_cache(self):
-        if self.backbone.caches:
-            for cache in self.backbone.caches:
-                cache.clear()
-        self.backbone.position_offset = 0

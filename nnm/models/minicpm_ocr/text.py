@@ -7,7 +7,6 @@ from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm, ZCRMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.models.minicpm_ocr.cache import build_layers_cache
 
 
 class RMSNormGated(RMSNorm):
@@ -229,7 +228,6 @@ class Qwen3_5Model(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.use_cache = getattr(config, "use_cache", False)
         self.layer_types = config.layer_types
         self.embed_tokens = nn.Embedding(
             config.vocab_size, config.hidden_size, padding_idx=getattr(config, "pad_token_id", None)
@@ -243,31 +241,19 @@ class Qwen3_5Model(nn.Module):
                 int(config.head_dim * config.rope_parameters.get("partial_rotary_factor", 1.0)),
             )
         )
-        if self.use_cache:
-            self.caches = build_layers_cache(self.layer_types, config)
-        else:
-            self.caches = None
-        self.position_offset = 0
 
-    def forward(self, input_ids=None, inputs_embeds=None, position_ids=None):
+    def forward(self, input_ids=None, inputs_embeds=None, position_ids=None, cache=None):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         seq_len = inputs_embeds.shape[1]
 
         if position_ids is None:
-            start = self.position_offset if self.use_cache else 0
+            start = cache.get_seq_length() if cache is not None else 0
             position_ids = torch.arange(start, start + seq_len, device=inputs_embeds.device)
         cos, sin = self.rope(position_ids.view(1, -1))
 
-        for layer, cache in zip(self.layers, self.caches or [None] * len(self.layers)):
-            inputs_embeds = layer(inputs_embeds, cos, sin, cache=cache)
+        layers = cache.layers if cache is not None else [None] * len(self.layers)
+        for layer, layer_cache in zip(self.layers, layers):
+            inputs_embeds = layer(inputs_embeds, cos, sin, cache=layer_cache)
 
-        if self.use_cache:
-            self.position_offset += seq_len
         return self.norm(inputs_embeds)
-
-    def clear_cache(self):
-        if self.caches is not None:
-            for cache in self.caches:
-                cache.clear()
-        self.position_offset = 0

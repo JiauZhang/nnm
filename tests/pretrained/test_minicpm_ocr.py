@@ -40,14 +40,13 @@ TEXT_TINY = {
     "attention_bias": False,
     "pad_token_id": 0,
     "rope_parameters": {"rope_theta": 10000.0, "partial_rotary_factor": 0.5, "rope_type": "default"},
-    "use_cache": False,
 }
 
 
-def tiny_config(use_cache=False):
+def tiny_config():
     return Config(
         vision_config=VISION_TINY,
-        text_config={**TEXT_TINY, "use_cache": use_cache},
+        text_config=TEXT_TINY,
         insert_layer_id=1,
         image_token_id=90,
         video_token_id=91,

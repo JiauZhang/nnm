@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from conippets.config import Config
+from nnm.cache import Cache
 from nnm.models.lfm3 import Lfm3LM
 
 TINY = {
@@ -43,11 +44,13 @@ class TestLfm3:
         "layer_types", [["conv"] * 4, ["conv", "sliding_attention", "full_attention", "conv"], ["full_attention"] * 4]
     )
     def test_incremental_decoding_matches_the_full_pass(self, layer_types):
-        model = Lfm3LM(tiny_config(use_cache=True, layer_types=layer_types)).eval()
+        config = tiny_config(layer_types=layer_types)
+        model = Lfm3LM(config).eval()
+        cache = Cache.from_layer_types(layer_types, window_size=config.sliding_window, state_size=config.conv_L_cache)
         input_ids = torch.randint(0, 100, (2, 10))
         with torch.no_grad():
             full = model(input_ids)
-            model.clear_cache()
-            chunks = [model(input_ids[:, :4]), model(input_ids[:, 4:7]), model(input_ids[:, 7:])]
+            chunks = [model(input_ids[:, :4], cache=cache), model(input_ids[:, 4:7], cache=cache)]
+            chunks.append(model(input_ids[:, 7:], cache=cache))
 
         assert torch.allclose(torch.cat(chunks, dim=1), full, atol=1e-4)

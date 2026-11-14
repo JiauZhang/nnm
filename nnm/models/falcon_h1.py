@@ -49,7 +49,7 @@ class FalconH1Model(nn.Module):
 
     def forward(self, inputs_embeds, attn_mask=None, conv_states=None, ssm_states=None, caches=None):
         inputs_embeds = inputs_embeds * self.embedding_multiplier
-        cache_len = caches[0].kv_len if caches is not None else 0
+        cache_len = caches[0].stored_length if caches is not None else 0
         if attn_mask is not None:
             batch, seq_len = attn_mask.shape
             attn_mask = make_causal_mask(

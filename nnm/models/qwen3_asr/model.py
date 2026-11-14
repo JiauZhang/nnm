@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+from nnm.cache import Cache, KVCache
 from nnm.layers.embedding import merge_placeholders
 from nnm.models.pretrained import PretrainedModel
 from nnm.models.qwen3_asr.audio import Qwen3ASRAudioEncoder
@@ -32,9 +33,9 @@ class Qwen3ASRThinker(nn.Module):
             inputs_embeds = merge_placeholders(inputs_embeds, input_ids == self.config.audio_token_id, audio_features)
         return inputs_embeds
 
-    def forward(self, input_ids, input_features=None, feature_attention_mask=None, attn_mask=None, use_cache=False):
+    def forward(self, input_ids, input_features=None, feature_attention_mask=None, attn_mask=None, cache=None):
         inputs_embeds = self.embed_inputs(input_ids, input_features, feature_attention_mask)
-        hidden = self.model(inputs_embeds, attn_mask=attn_mask, use_cache=use_cache)
+        hidden = self.model(inputs_embeds, attn_mask=attn_mask, cache=cache)
         return self.lm_head(hidden)
 
     @torch.no_grad()
@@ -42,17 +43,16 @@ class Qwen3ASRThinker(nn.Module):
         self, input_ids, input_features=None, feature_attention_mask=None, max_new_tokens=256, eos_token_ids=(151645, 151643)
     ):
         inputs_embeds = self.embed_inputs(input_ids, input_features, feature_attention_mask)
-        self.model.prepare_cache()
-        hidden = self.model(inputs_embeds, use_cache=True)
+        cache = Cache([KVCache() for _ in self.model.layers])
+        hidden = self.model(inputs_embeds, cache=cache)
         token = self.lm_head(hidden[:, -1]).argmax(-1)
         tokens = []
         for _ in range(max_new_tokens):
             if token.item() in eos_token_ids:
                 break
             tokens.append(token.item())
-            hidden = self.model(self.model.embed_tokens(token[:, None]), use_cache=True)
+            hidden = self.model(self.model.embed_tokens(token[:, None]), cache=cache)
             token = self.lm_head(hidden[:, -1]).argmax(-1)
-        self.model.clear_cache()
         return tokens
 
 
@@ -62,8 +62,8 @@ class Qwen3ASR(PretrainedModel):
         self.config = config
         self.thinker = Qwen3ASRThinker(config.thinker_config)
 
-    def forward(self, input_ids, input_features=None, feature_attention_mask=None, attn_mask=None):
-        return self.thinker(input_ids, input_features, feature_attention_mask, attn_mask)
+    def forward(self, input_ids, input_features=None, feature_attention_mask=None, attn_mask=None, cache=None):
+        return self.thinker(input_ids, input_features, feature_attention_mask, attn_mask, cache=cache)
 
     def generate(self, input_ids, input_features=None, feature_attention_mask=None, max_new_tokens=256):
         return self.thinker.generate(input_ids, input_features, feature_attention_mask, max_new_tokens)

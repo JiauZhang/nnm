@@ -4,6 +4,7 @@ import random
 from torch import nn
 from transformers.models.qwen2 import modeling_qwen2 as qwen2
 from transformers.models.qwen2 import configuration_qwen2 as cfg
+from nnm.cache import Cache, KVCache
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.layers.attention import RotarySelfAttention
 from nnm.models.qwen2 import (
@@ -274,3 +275,28 @@ def test_qwen2_backbone(
     hf_o = hf_backbone(input_ids=x, attention_mask=attn_mask)[0]
     assert nnm_o.shape == hf_o.shape
     torch.testing.assert_close(nnm_o, hf_o, atol=1e-5, rtol=1e-5)
+
+
+@torch.no_grad()
+def test_qwen2_incremental_decoding_with_external_cache():
+    model = Qwen2Model(
+        vocab_size=100,
+        embed_dim=32,
+        max_seq_len=64,
+        padding_idx=0,
+        rms_norm_eps=1e-6,
+        num_attn_heads=4,
+        num_kv_heads=2,
+        rope_base=10000.0,
+        intermediate_size=64,
+        num_hidden_layers=3,
+        sliding_window=None,
+    ).eval()
+    cache = Cache([KVCache() for _ in range(model.num_hidden_layers)])
+    input_ids = torch.randint(0, 100, (2, 9))
+
+    full = model(input_ids)
+    chunks = [model(input_ids[:, :4], cache=cache), model(input_ids[:, 4:7], cache=cache)]
+    chunks.append(model(input_ids[:, 7:], cache=cache))
+
+    torch.testing.assert_close(torch.cat(chunks, dim=1), full, atol=1e-5, rtol=1e-5)

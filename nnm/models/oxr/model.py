@@ -56,11 +56,8 @@ class OXR(PretrainedModel):
 
         return multimodal_embeds
 
-    def forward(self, input_ids, attn_mask=None, pixel_values=None, grid_thws=None, visual_tokens=None):
+    def forward(self, input_ids, attn_mask=None, pixel_values=None, grid_thws=None, visual_tokens=None, cache=None):
         inputs_embeds = self.merge_multimodal(
             input_ids, pixel_values=pixel_values, grid_thws=grid_thws, visual_tokens=visual_tokens
         )
-        return self.llm(inputs_embeds, attn_mask=attn_mask)
-
-    def clear_cache(self):
-        self.llm.clear_cache()
+        return self.llm(inputs_embeds, attn_mask=attn_mask, cache=cache)

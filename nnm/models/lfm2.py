@@ -4,7 +4,6 @@ from torch import nn
 from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.cache import KVCache, StateCache
 from nnm.models.pretrained import PretrainedModel
 from nnm.layers.conv import ShortConv
 
@@ -42,13 +41,12 @@ class Lfm2Attention(RotarySelfAttention):
             qk_norm=True,
             norm_layer=partial(nn.RMSNorm, eps=norm_eps, elementwise_affine=True),
         )
-        self.use_cache = getattr(config, "use_cache", False)
 
     def forward(self, hidden_states, rotary_embeddings, attn_mask=None, cache=None):
         return super().forward(
             hidden_states,
             rotary_embeddings,
-            cache=cache if self.use_cache else None,
+            cache=cache,
             attn_mask=attn_mask,
         )
 
@@ -67,7 +65,6 @@ class Lfm2DecoderLayer(nn.Module):
                 hidden_size,
                 getattr(config, "conv_L_cache", 3),
                 getattr(config, "conv_bias", False),
-                getattr(config, "use_cache", False),
             )
         intermediate_size = getattr(config, "intermediate_size", None) or getattr(
             config, "block_ff_dim", config.hidden_size * 4
@@ -111,7 +108,6 @@ class Lfm2Model(nn.Module):
         self.head_dim = config.hidden_size // config.num_attention_heads
         self.num_hidden_layers = config.num_hidden_layers
         self.padding_idx = getattr(config, "pad_token_id", 0)
-        self.use_cache = getattr(config, "use_cache", False)
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=self.padding_idx)
         rope_theta = getattr(config, "rope_theta", 1000000.0)
@@ -132,31 +128,20 @@ class Lfm2Model(nn.Module):
             ]
         )
         self.embedding_norm = nn.RMSNorm(config.hidden_size, eps=getattr(config, "norm_eps", 1e-5), elementwise_affine=True)
-        if self.use_cache:
-            self.caches = []
-            for layer_type in self.layer_types:
-                if layer_type == "full_attention":
-                    self.caches.append(KVCache())
-                else:
-                    self.caches.append(StateCache(state_size=getattr(config, "conv_L_cache", 3)))
-        else:
-            self.caches = None
 
-    def forward(self, input_ids, attn_mask=None):
+    def forward(self, input_ids, attn_mask=None, cache=None):
         hidden_states = self.embed_tokens(input_ids)
-        cache_len = next(
-            (cache.kv_len for cache in self.caches or [] if isinstance(cache, KVCache)),
-            0,
-        )
+        cache_len = cache.get_seq_length() if cache is not None else 0
         positions = torch.arange(cache_len, cache_len + hidden_states.shape[1], device=hidden_states.device)
         rotary_embeddings = self.position_encoder(positions)
 
-        for decoder_layer, cache in zip(self.layers, self.caches or [None] * len(self.layers)):
+        layers = cache.layers if cache is not None else [None] * len(self.layers)
+        for decoder_layer, layer_cache in zip(self.layers, layers):
             hidden_states = decoder_layer(
                 hidden_states,
                 rotary_embeddings=rotary_embeddings,
                 attn_mask=attn_mask,
-                cache=cache,
+                cache=layer_cache,
             )
 
         hidden_states = self.embedding_norm(hidden_states)
@@ -174,15 +159,10 @@ class Lfm2LM(PretrainedModel):
         else:
             self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-    def forward(self, input_ids, attn_mask=None):
-        output_embeds = self.backbone(input_ids, attn_mask=attn_mask)
+    def forward(self, input_ids, attn_mask=None, cache=None):
+        output_embeds = self.backbone(input_ids, attn_mask=attn_mask, cache=cache)
         if self.lm_head is not None:
             logits = self.lm_head(output_embeds)
         else:
             logits = torch.matmul(output_embeds, self.backbone.embed_tokens.weight.t())
         return logits
-
-    def clear_cache(self):
-        if self.backbone.caches:
-            for cache in self.backbone.caches:
-                cache.clear()

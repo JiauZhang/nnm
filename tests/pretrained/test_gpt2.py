@@ -2,6 +2,7 @@ import pytest
 import torch
 from transformers import GPT2LMHeadModel
 
+from nnm.cache import Cache, KVCache
 from nnm.models.gpt2 import GPT2LM
 
 pytestmark = pytest.mark.pretrained
@@ -9,7 +10,7 @@ pytestmark = pytest.mark.pretrained
 
 @pytest.fixture(scope="module")
 def model(load_pretrained):
-    return load_pretrained(GPT2LM, use_cache=True)
+    return load_pretrained(GPT2LM)
 
 
 @pytest.fixture(scope="module")
@@ -17,9 +18,9 @@ def reference(require_reference_path):
     return GPT2LMHeadModel.from_pretrained(require_reference_path).eval()
 
 
-@pytest.fixture(autouse=True)
-def empty_cache(model):
-    model.clear_cache()
+@pytest.fixture
+def cache(model):
+    return Cache([KVCache() for _ in range(model.backbone.num_layers)])
 
 
 def make_inputs(batch=2, length=16):
@@ -45,21 +46,21 @@ def test_logits_match_transformers(model, reference):
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=0)
 
 
-def test_incremental_decoding_matches_the_full_pass(model):
+def test_incremental_decoding_matches_the_full_pass(model, cache):
     input_ids, _ = make_inputs()
     with torch.no_grad():
         full = model(input_ids)
-        model.clear_cache()
-        chunks = [model(input_ids[:, :8]), model(input_ids[:, 8:12]), model(input_ids[:, 12:])]
+        chunks = [model(input_ids[:, :8], cache=cache), model(input_ids[:, 8:12], cache=cache)]
+        chunks.append(model(input_ids[:, 12:], cache=cache))
 
     torch.testing.assert_close(torch.cat(chunks, dim=1), full, atol=1e-4, rtol=0)
 
 
-def test_cache_tracks_the_context(model):
+def test_cache_tracks_the_context(model, cache):
     input_ids, _ = make_inputs(length=6)
     with torch.no_grad():
-        model(input_ids[:, :4])
-        assert model.backbone.caches[0].kv_len == 4
-        model(input_ids[:, 4:])
+        model(input_ids[:, :4], cache=cache)
+        assert cache.get_seq_length() == 4
+        model(input_ids[:, 4:], cache=cache)
 
-    assert model.backbone.caches[0].kv_len == 6
+    assert cache.get_seq_length() == 6

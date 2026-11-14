@@ -2,7 +2,7 @@ import torch
 from functools import partial
 from torch import nn
 
-from nnm.cache import KVCache
+from nnm.cache import Cache, KVCache
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.models.pretrained import PretrainedModel
@@ -16,34 +16,21 @@ class _CachedStack(nn.Module):
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.rotary_emb = RoPE(rotary_inv_freq(head_dim, config.rope_theta))
-        self.caches = None
-        self.position_offset = 0
 
-    def prepare_cache(self):
-        self.caches = [KVCache() for _ in range(len(self.layers))]
-        self.position_offset = 0
-
-    def clear_cache(self):
-        if self.caches:
-            for cache in self.caches:
-                cache.clear()
-        self.position_offset = 0
-
-    def _forward_stack(self, inputs_embeds, attn_mask=None, use_cache=False):
+    def _forward_stack(self, inputs_embeds, attn_mask=None, cache=None):
         seq_len = inputs_embeds.shape[1]
-        offset = self.position_offset
+        offset = cache.get_seq_length() if cache is not None else 0
         positions = torch.arange(offset, offset + seq_len, device=inputs_embeds.device)
         cos, sin = self.rotary_emb(positions)
+        layers = cache.layers if cache is not None else [None] * len(self.layers)
         hidden = inputs_embeds
-        for index, layer in enumerate(self.layers):
+        for layer, layer_cache in zip(self.layers, layers):
             hidden = layer(
                 hidden,
                 rotary_embeddings=(cos, sin),
-                cache=self.caches[index] if use_cache else None,
+                cache=layer_cache,
                 attn_mask=attn_mask,
             )
-        if use_cache:
-            self.position_offset += seq_len
         return self.norm(hidden)
 
 
@@ -55,8 +42,8 @@ class TalkerModel(_CachedStack):
         self.text_embedding = nn.Embedding(config.text_vocab_size, config.text_hidden_size)
         self._init_stack(config)
 
-    def forward(self, inputs_embeds, attn_mask=None, use_cache=False):
-        return self._forward_stack(inputs_embeds, attn_mask=attn_mask, use_cache=use_cache)
+    def forward(self, inputs_embeds, attn_mask=None, cache=None):
+        return self._forward_stack(inputs_embeds, attn_mask=attn_mask, cache=cache)
 
 
 class TextProjection(nn.Module):
@@ -79,8 +66,8 @@ class CodePredictorModel(_CachedStack):
         )
         self._init_stack(config)
 
-    def forward(self, inputs_embeds, use_cache=False):
-        return self._forward_stack(inputs_embeds, use_cache=use_cache)
+    def forward(self, inputs_embeds, cache=None):
+        return self._forward_stack(inputs_embeds, cache=cache)
 
 
 class CodePredictor(nn.Module):
@@ -92,22 +79,18 @@ class CodePredictor(nn.Module):
             [nn.Linear(config.hidden_size, config.vocab_size, bias=False) for _ in range(config.num_code_groups - 1)]
         )
 
-    def generate(self, past_hidden, token_embedding, use_cache=True, do_sample=False, top_k=50, top_p=1.0, temperature=0.9):
-        if use_cache:
-            self.model.prepare_cache()
+    def generate(self, past_hidden, token_embedding, cache=None, do_sample=False, top_k=50, top_p=1.0, temperature=0.9):
         inputs_embeds = torch.cat([past_hidden, token_embedding], dim=1)
-        hidden = self.model(inputs_embeds, use_cache=use_cache)
+        hidden = self.model(inputs_embeds, cache=cache)
         logits = self.lm_head[0](hidden[:, -1])
         codes = [select_token(logits, do_sample, top_k, top_p, temperature)]
 
         for step in range(1, self.config.num_code_groups - 1):
             inputs_embeds = self.model.codec_embedding[step - 1](codes[-1].unsqueeze(-1))
-            hidden = self.model(inputs_embeds, use_cache=use_cache)
+            hidden = self.model(inputs_embeds, cache=cache)
             logits = self.lm_head[step](hidden[:, -1])
             codes.append(select_token(logits, do_sample, top_k, top_p, temperature))
 
-        if use_cache:
-            self.model.clear_cache()
         return torch.stack(codes, dim=-1)
 
 
@@ -147,9 +130,6 @@ class Talker(nn.Module):
         self.text_projection = TextProjection(config)
         self.codec_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.code_predictor = CodePredictor(config.code_predictor_config, config.hidden_size)
-
-    def clear_cache(self):
-        self.model.clear_cache()
 
 
 class Qwen3TTS(PretrainedModel):
@@ -258,8 +238,8 @@ class Qwen3TTS(PretrainedModel):
         config = self.config.talker_config
         talker_embed, trailing_text, tts_pad_embed = self.embed_prompt(input_ids, speaker, language, non_streaming_mode)
 
-        talker.model.prepare_cache()
-        hidden = talker.model(talker_embed, use_cache=True)
+        cache = Cache([KVCache() for _ in talker.model.layers])
+        hidden = talker.model(talker_embed, cache=cache)
         token = select_token(suppressed_logits(talker.codec_head(hidden[:, -1]), config), do_sample, top_k, top_p, temperature)
         past_hidden = hidden[:, -1:]
         frames = []
@@ -271,6 +251,7 @@ class Qwen3TTS(PretrainedModel):
             group_codes = talker.code_predictor.generate(
                 past_hidden,
                 token_embedding,
+                cache=Cache([KVCache() for _ in talker.code_predictor.model.layers]),
                 do_sample=subtalker_do_sample,
                 top_k=subtalker_top_k,
                 top_p=subtalker_top_p,
@@ -287,16 +268,12 @@ class Qwen3TTS(PretrainedModel):
             else:
                 codec_embedding = codec_embedding + tts_pad_embed
 
-            hidden = talker.model(codec_embedding, use_cache=True)
+            hidden = talker.model(codec_embedding, cache=cache)
             token = select_token(
                 suppressed_logits(talker.codec_head(hidden[:, -1]), config), do_sample, top_k, top_p, temperature
             )
             past_hidden = hidden[:, -1:]
 
-        talker.clear_cache()
         if not frames:
             return torch.zeros(0, self.config.talker_config.num_code_groups, dtype=torch.long)
         return torch.cat(frames, dim=0)
-
-    def clear_cache(self):
-        self.talker.clear_cache()

@@ -2,7 +2,6 @@ import torch
 from functools import partial
 from torch import nn
 
-from nnm.cache import KVCache, StateCache
 from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.conv import ShortConv
 from nnm.layers.mlp import GatedMLP
@@ -23,11 +22,9 @@ class Attention(RotarySelfAttention):
             sliding_window=config.sliding_window if config.layer_types[layer_idx] == "sliding_attention" else None,
         )
         self.gate_proj = nn.Linear(config.hidden_size, config.num_attention_heads, bias=False)
-        self.use_cache = getattr(config, "use_cache", False)
 
     def forward(self, x, rotary_embeddings=None, cache=None, attn_mask=None):
         batch, seq_len = x.shape[:2]
-        cache = cache if self.use_cache else None
         output = self.forward_heads(
             x,
             rotary_embeddings=rotary_embeddings,
@@ -47,9 +44,7 @@ class DecoderLayer(nn.Module):
         if self.is_attention:
             self.self_attn = Attention(config, layer_idx)
         else:
-            self.conv = ShortConv(
-                config.hidden_size, config.conv_L_cache, config.conv_bias, getattr(config, "use_cache", False)
-            )
+            self.conv = ShortConv(config.hidden_size, config.conv_L_cache, config.conv_bias)
         self.feed_forward = GatedMLP(config.hidden_size, config.intermediate_size)
         self.operator_norm = RMSNorm(config.hidden_size, config.norm_eps)
         self.ffn_norm = RMSNorm(config.hidden_size, config.norm_eps)
@@ -79,7 +74,6 @@ class Lfm3Model(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.use_cache = getattr(config, "use_cache", False)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.rotary = nn.ModuleDict(
             {
@@ -95,27 +89,19 @@ class Lfm3Model(nn.Module):
         )
         self.layers = nn.ModuleList([DecoderLayer(config, index) for index in range(config.num_hidden_layers)])
         self.embedding_norm = RMSNorm(config.hidden_size, config.norm_eps)
-        if self.use_cache:
-            self.caches = [
-                KVCache() if layer_type != "conv" else StateCache(config.conv_L_cache) for layer_type in config.layer_types
-            ]
-        else:
-            self.caches = None
-        self.position_offset = 0
 
-    def forward(self, input_ids=None, inputs_embeds=None, attn_mask=None):
+    def forward(self, input_ids=None, inputs_embeds=None, attn_mask=None, cache=None):
         hidden = self.embed_tokens(input_ids) if inputs_embeds is None else inputs_embeds
         seq_len = hidden.shape[1]
-        offset = self.position_offset
+        offset = cache.get_seq_length() if cache is not None else 0
         positions = torch.arange(offset, offset + seq_len, device=hidden.device)
+        layers = cache.layers if cache is not None else [None] * len(self.layers)
 
         for index, layer in enumerate(self.layers):
             layer_type = self.config.layer_types[index]
             cos, sin = self.rotary[layer_type](positions) if layer_type != "conv" else (None, None)
-            hidden = layer(hidden, cos, sin, self.caches[index] if self.use_cache else None, attn_mask)
+            hidden = layer(hidden, cos, sin, layers[index], attn_mask)
 
-        if self.use_cache:
-            self.position_offset += seq_len
         return self.embedding_norm(hidden)
 
 
@@ -131,14 +117,8 @@ class Lfm3LM(PretrainedModel):
         self.backbone = Lfm3Model(config)
         self.lm_head = None if self.tie_word_embeddings else nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-    def forward(self, input_ids, attn_mask=None):
-        hidden = self.backbone(input_ids, attn_mask=attn_mask)
+    def forward(self, input_ids, attn_mask=None, cache=None):
+        hidden = self.backbone(input_ids, attn_mask=attn_mask, cache=cache)
         if self.lm_head is not None:
             return self.lm_head(hidden)
         return torch.matmul(hidden, self.backbone.embed_tokens.weight.t())
-
-    def clear_cache(self):
-        if self.backbone.caches:
-            for cache in self.backbone.caches:
-                cache.clear()
-        self.backbone.position_offset = 0

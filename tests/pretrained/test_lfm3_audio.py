@@ -27,7 +27,6 @@ TINY = {
         "conv_bias": False,
         "use_sandwich_norm": True,
         "pad_token_id": 1,
-        "use_cache": False,
         "layer_types": ["conv", "full_attention"],
         "rope_parameters": {
             "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.5, "rope_type": "default"},
@@ -50,7 +49,6 @@ TINY = {
             "norm_eps": 1e-5,
             "conv_L_cache": 3,
             "conv_bias": False,
-            "use_cache": False,
             "pad_token_id": 0,
             "block_auto_adjust_ff_dim": True,
             "block_ffn_dim_multiplier": 1.0,
@@ -72,7 +70,6 @@ TINY = {
         "conv_L_cache": 7,
         "conv_bias": False,
         "use_sandwich_norm": False,
-        "use_cache": False,
         "pad_token_id": None,
         "layer_types": ["full_attention", "full_attention"],
         "rope_parameters": {"full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 1.0, "rope_type": "default"}},

@@ -3,6 +3,9 @@
 pip install nnm
 ```
 
+### Inference
+End-to-end inference lives in [nnserve](https://github.com/JiauZhang/nnserve).
+
 ### Sponsor
 <table align="center">
     <thead>

@@ -2,7 +2,6 @@ import torch
 from functools import partial
 from torch import nn
 
-from nnm.cache import KVCache
 from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.mlp import GatedMLP
@@ -36,16 +35,14 @@ class Qwen3Model(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.padding_idx = config.pad_token_id
-        self.use_cache = getattr(config, "use_cache", False)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=self.padding_idx)
         head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.position_encoder = RoPE(rotary_inv_freq(head_dim, config.rope_theta))
         self.layers = nn.ModuleList([make_qwen3_layer(config) for _ in range(config.num_hidden_layers)])
         self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
-        self.caches = [KVCache() for _ in range(config.num_hidden_layers)] if self.use_cache else None
 
-    def forward(self, inputs_embeds, attn_mask=None):
-        cache_len = self.caches[0].kv_len if self.use_cache and self.caches else 0
+    def forward(self, inputs_embeds, attn_mask=None, cache=None):
+        cache_len = cache.get_seq_length() if cache is not None else 0
         if attn_mask is not None:
             batch, seq_len = attn_mask.shape
             attn_mask = make_causal_mask(
@@ -53,12 +50,13 @@ class Qwen3Model(nn.Module):
             )
         positions = torch.arange(cache_len, cache_len + inputs_embeds.shape[1], device=inputs_embeds.device)
         rotary_embeddings = self.position_encoder(positions)
-        for layer, cache in zip(self.layers, self.caches or [None] * len(self.layers)):
+        layers = cache.layers if cache is not None else [None] * len(self.layers)
+        for layer, layer_cache in zip(self.layers, layers):
             inputs_embeds = layer(
                 inputs_embeds,
                 rotary_embeddings=rotary_embeddings,
                 attn_mask=attn_mask,
-                cache=cache,
+                cache=layer_cache,
             )
         return self.norm(inputs_embeds)
 
@@ -73,11 +71,6 @@ class Qwen3ForCausalLM(nn.Module):
         if self.tie_word_embeddings:
             self.lm_head.weight = self.backbone.embed_tokens.weight
 
-    def forward(self, inputs_embeds, attn_mask=None):
-        hidden_states = self.backbone(inputs_embeds, attn_mask)
+    def forward(self, inputs_embeds, attn_mask=None, cache=None):
+        hidden_states = self.backbone(inputs_embeds, attn_mask, cache=cache)
         return self.lm_head(hidden_states)
-
-    def clear_cache(self):
-        if self.backbone.caches:
-            for cache in self.backbone.caches:
-                cache.clear()

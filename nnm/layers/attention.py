@@ -19,15 +19,23 @@ def causal_attention(
     causal=True,
 ):
     seq_len = query.shape[-2]
-    if cache is not None and attn_mask is not None and attn_mask.dim() == 2 and attn_mask.shape[-1] < cache.kv_len + seq_len:
+    if (
+        cache is not None
+        and attn_mask is not None
+        and attn_mask.dim() == 2
+        and attn_mask.shape[-1] < cache.stored_length + seq_len
+    ):
         padding = torch.ones(
-            attn_mask.shape[0], cache.kv_len + seq_len - attn_mask.shape[-1], device=attn_mask.device, dtype=attn_mask.dtype
+            attn_mask.shape[0],
+            cache.stored_length + seq_len - attn_mask.shape[-1],
+            device=attn_mask.device,
+            dtype=attn_mask.dtype,
         )
         attn_mask = torch.cat([padding, attn_mask], dim=-1)
 
     cached = cache is not None
     if cached:
-        cache_len = cache.kv_len
+        cache_len = cache.stored_length
         key, value = cache.update(key, value)
     if cached or sliding_window is not None or attn_mask is not None:
         if attn_mask is not None and attn_mask.dim() == 4:

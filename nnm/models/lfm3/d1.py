@@ -88,18 +88,13 @@ class D1VlModel(PretrainedModel):
         pixel_values_videos=None,
         video_grid_thw=None,
         attn_mask=None,
+        cache=None,
     ):
         inputs_embeds = self.embed_inputs(input_ids, pixel_values, image_grid_thw, pixel_values_videos, video_grid_thw)
-        hidden = self.language_model(inputs_embeds=inputs_embeds, attn_mask=attn_mask)
+        hidden = self.language_model(inputs_embeds=inputs_embeds, attn_mask=attn_mask, cache=cache)
         if self.lm_head is not None:
             return self.lm_head(hidden)
         return torch.matmul(hidden, self.language_model.embed_tokens.weight.t())
-
-    def clear_cache(self):
-        if self.language_model.caches:
-            for cache in self.language_model.caches:
-                cache.clear()
-        self.language_model.position_offset = 0
 
 
 class D1OmniModel(Lfm3OmniModel):

@@ -123,7 +123,6 @@ CASES = [
             pad_token_id=0,
             audio_token_id=5,
             tie_word_embeddings=True,
-            use_cache=False,
             sliding_window=None,
             qwen3_asr_mlp_tower_layers=1,
             qwen3_asr_mlp_tower_hidden_size=0,

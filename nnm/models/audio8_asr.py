@@ -52,7 +52,6 @@ class Audio8ASR(PretrainedModel):
             num_kv_heads=config.num_key_value_heads,
             intermediate_size=config.intermediate_size,
             sliding_window=config.get("sliding_window"),
-            use_cache=config.get("use_cache", False),
         )
         self.audio_encoder = Qwen3ASRAudioEncoder(audio_config)
         intermediate_size = config.get("qwen3_asr_mlp_tower_hidden_size", 0) or audio_dim * 4

@@ -40,7 +40,6 @@ TINY_TEXT = {
     "conv_L_cache": 7,
     "conv_bias": False,
     "use_sandwich_norm": True,
-    "use_cache": False,
     "pad_token_id": 1,
     "bos_token_id": 2,
     "eos_token_id": 3,

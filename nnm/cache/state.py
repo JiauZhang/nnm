@@ -1,9 +1,10 @@
 import torch
 import torch.nn.functional as F
-from .base import Cache
+
+from .base import CacheLayer
 
 
-class StateCache(Cache):
+class StateCache(CacheLayer):
     def __init__(self, state_size: int):
         self.state_size = state_size
         self.state = None
@@ -24,3 +25,6 @@ class StateCache(Cache):
 
     def is_empty(self):
         return self.state is None
+
+    def get_max_cache_shape(self) -> int:
+        return self.state_size

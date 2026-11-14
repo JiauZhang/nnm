@@ -42,12 +42,9 @@ class MiniCPMOcrModel(PretrainedModel):
             inputs_embeds = merge_placeholders(inputs_embeds, input_ids == self.image_token_id, image_features)
         return inputs_embeds
 
-    def forward(self, input_ids, pixel_values=None, target_sizes=None, position_ids=None, downsample_mode=None):
+    def forward(self, input_ids, pixel_values=None, target_sizes=None, position_ids=None, downsample_mode=None, cache=None):
         inputs_embeds = self.embed_inputs(input_ids, pixel_values, target_sizes, downsample_mode)
-        hidden_states = self.backbone(inputs_embeds=inputs_embeds, position_ids=position_ids)
+        hidden_states = self.backbone(inputs_embeds=inputs_embeds, position_ids=position_ids, cache=cache)
         if self.lm_head is not None:
             return self.lm_head(hidden_states)
         return torch.matmul(hidden_states, self.backbone.embed_tokens.weight.t())
-
-    def clear_cache(self):
-        self.backbone.clear_cache()

@@ -1,5 +1,6 @@
 import torch
 from conippets.config import Config
+from nnm.models.minicpm_ocr.cache import build_layers_cache
 from nnm.models.minicpm_ocr.model import MiniCPMOcrModel
 
 VISION_TINY = {
@@ -36,14 +37,13 @@ TEXT_TINY = {
     "attention_bias": False,
     "pad_token_id": 0,
     "rope_parameters": {"rope_theta": 10000.0, "partial_rotary_factor": 0.5, "rope_type": "default"},
-    "use_cache": False,
 }
 
 
-def tiny_config(use_cache=False):
+def tiny_config():
     return Config(
         vision_config=VISION_TINY,
-        text_config={**TEXT_TINY, "use_cache": use_cache},
+        text_config=TEXT_TINY,
         insert_layer_id=1,
         image_token_id=90,
         video_token_id=91,
@@ -107,11 +107,12 @@ class TestArchitecture:
         assert features_16x[0].shape == (16 // 16, 32)
 
     def test_incremental_decoding_matches_the_full_pass(self):
-        model = MiniCPMOcrModel(tiny_config(use_cache=True)).eval()
+        model = MiniCPMOcrModel(tiny_config()).eval()
+        cache = build_layers_cache(model.backbone.layer_types, model.backbone.config)
         input_ids = torch.randint(1, 90, (2, 10))
         with torch.no_grad():
             full = model(input_ids)
-            model.clear_cache()
-            chunks = [model(input_ids[:, :4]), model(input_ids[:, 4:7]), model(input_ids[:, 7:])]
+            chunks = [model(input_ids[:, :4], cache=cache), model(input_ids[:, 4:7], cache=cache)]
+            chunks.append(model(input_ids[:, 7:], cache=cache))
 
         assert torch.allclose(torch.cat(chunks, dim=1), full, atol=1e-4)

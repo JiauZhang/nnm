@@ -4,6 +4,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from nnm.cache import Cache, KVCache
 from nnm.models.qwen2 import Qwen2LM
 
 pytestmark = pytest.mark.pretrained
@@ -41,6 +42,7 @@ def test_qwen2_pretrained(require_model_path, source_repo, prompts, use_cache):
     hf_input_ids = tokenizer(prompts[0], return_tensors="pt")["input_ids"]
     nnm_input_ids = hf_input_ids.clone()
     hf_past_key_values = None
+    nnm_cache = Cache([KVCache() for _ in range(nnm_model.config.num_hidden_layers)]) if use_cache else None
 
     for turn_idx, prompt in enumerate(prompts):
         if turn_idx > 0:
@@ -54,7 +56,7 @@ def test_qwen2_pretrained(require_model_path, source_repo, prompts, use_cache):
             hf_out = hf_model_gen(input_ids, past_key_values=hf_past_key_values, use_cache=True)
             hf_past_key_values = hf_out.past_key_values
             hf_logits = hf_out.logits
-            nnm_model(input_ids)
+            nnm_model(input_ids, cache=nnm_cache)
         else:
             hf_out = hf_model_gen(hf_input_ids, use_cache=False)
             hf_logits = hf_out.logits
@@ -69,7 +71,7 @@ def test_qwen2_pretrained(require_model_path, source_repo, prompts, use_cache):
                 hf_out = hf_model_gen(hf_input_ids[:, -1:], past_key_values=hf_past_key_values, use_cache=True)
                 hf_past_key_values = hf_out.past_key_values
                 hf_logits = hf_out.logits
-                nnm_model(nnm_input_ids[:, -1:])
+                nnm_model(nnm_input_ids[:, -1:], cache=nnm_cache)
             else:
                 hf_out = hf_model_gen(hf_input_ids, use_cache=False)
                 hf_logits = hf_out.logits

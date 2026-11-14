@@ -28,7 +28,7 @@ def vit_config():
     )
 
 
-def qwen_config(use_cache=False):
+def qwen_config():
     return Config(
         vocab_size=100,
         hidden_size=32,
@@ -42,7 +42,6 @@ def qwen_config(use_cache=False):
         rms_norm_eps=1e-6,
         tie_word_embeddings=True,
         pad_token_id=0,
-        use_cache=use_cache,
     )
 
 

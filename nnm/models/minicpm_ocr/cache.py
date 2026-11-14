@@ -1,11 +1,10 @@
 import torch
 import torch.nn.functional as F
 
-from nnm.cache import KVCache
-from nnm.cache.base import Cache
+from nnm.cache import Cache, CacheLayer, KVCache
 
 
-class GatedDeltaNetCache(Cache):
+class GatedDeltaNetCache(CacheLayer):
     def __init__(self, kernel_size):
         self.kernel_size = kernel_size
         self.conv_state = None
@@ -35,10 +34,10 @@ class GatedDeltaNetCache(Cache):
 
 
 def build_layers_cache(layer_types, text_config):
-    caches = []
+    layers = []
     for layer_type in layer_types:
         if layer_type == "full_attention":
-            caches.append(KVCache())
+            layers.append(KVCache())
         else:
-            caches.append(GatedDeltaNetCache(text_config.linear_conv_kernel_dim))
-    return caches
+            layers.append(GatedDeltaNetCache(text_config.linear_conv_kernel_dim))
+    return Cache(layers)

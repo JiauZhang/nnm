@@ -23,7 +23,6 @@ TEXT = {
     "conv_bias": False,
     "use_sandwich_norm": True,
     "pad_token_id": 1,
-    "use_cache": False,
     "layer_types": ["conv", "full_attention"],
     "rope_parameters": {
         "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.5, "rope_type": "default"},
