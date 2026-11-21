@@ -2,7 +2,7 @@ import torch
 from conippets.config import Config
 from transformers import DINOv3ViTConfig, DINOv3ViTModel
 
-from nnm.models.dinov3 import DINOv3
+from nnm.models.dino import DINOv3
 
 
 def map_state_dict(state_dict):

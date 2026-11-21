@@ -1,6 +1,6 @@
 import torch
 
-from tests.models.smoke_registry import SmokeCase, make
+from tests.models.smoke_registry import SmokeCase, make, shape
 
 
 def check_davit(model, output):
@@ -37,6 +37,14 @@ def check_perception_encoder(model, output):
     assert tuple(output["logits_per_image"].shape) == (2, 2)
     vision = model.vision_model.forward_features(torch.randn(1, 3, 32, 32))
     assert tuple(vision["x_norm_clstoken"].shape) == (1, 32)
+
+
+def check_depthanything2(model, output):
+    assert tuple(output.shape) == (1, 32, 32)
+
+
+def check_depthpro2(model, output):
+    assert tuple(output.shape) == (2, 32, 32)
 
 
 CASES = [
@@ -187,5 +195,85 @@ CASES = [
             torch.ones(2, 8, dtype=torch.long),
         ),
         check_perception_encoder,
+    ),
+    SmokeCase(
+        "depthpro2",
+        "monocular-depth",
+        make(
+            "nnm.models.depthpro2",
+            "DepthPro2",
+            hidden_size=32,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            intermediate_size=64,
+            num_register_tokens=2,
+            layer_norm_eps=1e-6,
+            patch_size=8,
+            rope_theta=100.0,
+            pos_embed_rope_normalize_coords="max",
+            layerscale_init=1e-5,
+            qkv_bias=False,
+            proj_bias=True,
+            hidden_act="gelu",
+            fov=False,
+            reassembled_blocks=[0, 1, 2, 3],
+            cross_frame_blocks=[1, 3],
+            dims_reassemble=[8, 16, 32, 32],
+            dim_decoder=16,
+        ),
+        lambda: (torch.randn(2, 3, 32, 32),),
+        check_depthpro2,
+        call=lambda model: model.predict_inverse_depth(torch.randn(2, 3, 32, 32)),
+    ),
+    SmokeCase(
+        "depthpro2-fov",
+        "focal-estimator",
+        make(
+            "nnm.models.depthpro2",
+            "FOVEstimator",
+            hidden_size=32,
+            num_hidden_layers=12,
+            num_attention_heads=4,
+            intermediate_size=64,
+            num_register_tokens=2,
+            layer_norm_eps=1e-6,
+            patch_size=8,
+            rope_theta=100.0,
+            pos_embed_rope_normalize_coords="max",
+            layerscale_init=1e-5,
+            qkv_bias=False,
+            proj_bias=True,
+            hidden_act="gelu",
+        ),
+        lambda: (torch.randn(1, 3, 64, 64),),
+        shape(1, 2),
+    ),
+    SmokeCase(
+        "depthanything2",
+        "monocular-depth",
+        make(
+            "nnm.models.depthanything2",
+            "DepthAnythingV2",
+            hidden_size=32,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            intermediate_size=64,
+            num_channels=3,
+            patch_size=8,
+            image_size=32,
+            layer_norm_eps=1e-6,
+            layerscale_init=1e-5,
+            num_register_tokens=0,
+            qkv_bias=True,
+            proj_bias=True,
+            hidden_act="gelu",
+            features=16,
+            out_channels=[8, 16, 32, 32],
+            use_clstoken=False,
+            tapped_blocks=[0, 1, 2, 3],
+            variant="vits",
+        ),
+        lambda: (torch.randn(1, 3, 32, 32),),
+        check_depthanything2,
     ),
 ]
