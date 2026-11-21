@@ -130,7 +130,9 @@ class PretrainedModel(nn.Module):
 
         state_dict = {}
         for path in paths:
-            state_dict.update(cls._read_file(path))
+            file_state = cls._read_file(path)
+            if file_state:
+                state_dict.update(file_state)
 
         if mapping:
             state_dict = cls._apply_mapping(state_dict, directory, mapping, config)
@@ -157,6 +159,8 @@ class PretrainedModel(nn.Module):
 
             return load_file(path)
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(checkpoint, dict):
+            return None
         return checkpoint.get("state_dict", checkpoint)
 
     @classmethod
