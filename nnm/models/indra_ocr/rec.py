@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class MaskedSqueezeExcitation(nn.Module):
@@ -57,14 +57,14 @@ class IndraOCRRecognition(PretrainedModel):
     module_name = "rec"
 
     @classmethod
-    def manifest_key(cls, **kwargs):
-        variant = kwargs.get("variant")
+    def manifest_key(cls, config):
+        variant = config.get("variant")
         return f"{cls.module_name}_{variant}" if variant else cls.module_name
 
-    def __init__(self, config, variant=None):
+    def __init__(self, config):
         super().__init__()
         self.config = config
-        self.variant = variant
+        self.variant = config.get("variant")
         self.band = (config.image_height - config.band_height) // 2
 
         timestep = config.timestep

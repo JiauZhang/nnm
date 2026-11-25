@@ -5,7 +5,7 @@ from nnm.layers.drop import DropPath
 from nnm.layers.se import SqueezeExcitation
 from nnm.layers.attention import SelfAttention
 from nnm.layers.scale import LayerScale
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 def _groups(group_size, channels):

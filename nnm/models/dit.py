@@ -3,7 +3,7 @@ from torch import nn
 
 from nnm.layers.dit import DiTBlock, FinalLayer, TimestepEmbedder
 from nnm.layers.grid import PatchEmbed2D, unpatchify
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class DiT(PretrainedModel):

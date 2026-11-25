@@ -13,7 +13,7 @@ from nnm.layers.rope import RopePositionEmbedding
 from nnm.layers.transformer import TransformerBlock
 from nnm.models.dino import build_dinov3_block
 from nnm.models.dpt import DPTDecoder
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 INPUT_MULTIPLE = 32
 DEFAULT_WINDOW = 16

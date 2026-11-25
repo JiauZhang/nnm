@@ -7,7 +7,7 @@ from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.transformer import TransformerBlock
 from nnm.models.falcon_h1 import FalconH1Model
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class Audio8TTS(PretrainedModel):

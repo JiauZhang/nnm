@@ -8,7 +8,7 @@ from nnm.layers.embedding import merge_placeholders
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, RoPE2D, yarn_inv_freq
 from nnm.models.clip import CLIPVisionModel
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 from nnm.models.sam import SamVisionEncoder
 from nnm.models.unlimited_ocr.decoder import DecoderLayer
 from nnm.models.unlimited_ocr.sparse import build_page_layout

@@ -8,7 +8,7 @@ from nnm.layers.mlp import GatedMLP, MLP
 from nnm.layers.rope import RoPE, RopePositionEmbedding, rotary_inv_freq
 from nnm.layers.transformer import RotaryLayerScaleBlock, TransformerBlock
 from nnm.layers.grid import PatchEmbed2D
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 def _ffn(config, hidden_size):

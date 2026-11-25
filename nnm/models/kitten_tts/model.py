@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from nnm.models.albert import AlbertModel
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 from .decoder import Decoder
 from ..styletts2.predictor import ProsodyPredictor
@@ -29,10 +29,10 @@ def tokens_from_phonemes(phonemes, vocab):
 class KittenTTS(PretrainedModel):
     module_name = "kitten_tts"
 
-    def __init__(self, config, variant=None):
+    def __init__(self, config):
         super().__init__()
         self.config = config
-        self.variant = variant
+        self.variant = config.get("variant")
         hidden_dim = config.hidden_dim
         style_dim = config.style_dim
 
@@ -70,8 +70,8 @@ class KittenTTS(PretrainedModel):
         )
 
     @classmethod
-    def manifest_key(cls, **kwargs):
-        variant = kwargs.get("variant")
+    def manifest_key(cls, config):
+        variant = config.get("variant")
         return f"{cls.module_name}_{variant}" if variant else cls.module_name
 
     @torch.no_grad()

@@ -5,7 +5,7 @@ from nnm.layers.conv import ResBlock2D
 from nnm.layers.dit import DiTBlock
 from nnm.layers.norm import LayerNorm2d
 from nnm.layers.vq import VectorQuantizer
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class VarVQVAE(PretrainedModel):

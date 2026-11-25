@@ -10,7 +10,7 @@ from nnm.models.kronos.module import (
     TemporalEmbedding,
     TransformerBlock,
 )
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class KronosTokenizer(PretrainedModel):

@@ -30,7 +30,7 @@ def rec_model(require_model_path):
 @pytest.fixture(scope="module")
 def group_models(require_model_path):
     return {
-        variant: IndraOCRRecognition.from_pretrained(require_model_path, variant=variant).eval()
+        variant: IndraOCRRecognition.from_pretrained(require_model_path, config={"variant": variant}).eval()
         for variant in ("cjk", "rtl", "world")
     }
 

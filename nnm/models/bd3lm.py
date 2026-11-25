@@ -8,7 +8,7 @@ from nnm.backends.sdpa import scaled_dot_product_attention
 from nnm.layers.dit import TimestepEmbedder, modulate
 from nnm.layers.norm import WeightOnlyLayerNorm
 from nnm.layers.rope import FusedQKVRoPE, apply_rope
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 def block_diff_mask(q_idx, kv_idx, block_size, n):

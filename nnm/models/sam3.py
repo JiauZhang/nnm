@@ -16,7 +16,7 @@ from nnm.layers.sinusoidal import sinusoidal_embedding
 from nnm.layers.transformer import CrossTransformerBlock, RotaryLayerScaleBlock, TransformerBlock
 from nnm.layers.vision.attention import window_partition_padded, window_unpartition_padded
 from nnm.models.detr import DetrSinePositionEmbedding, inverse_sigmoid
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 def _mlp_head(input_size, hidden_size, output_size, num_layers=2):

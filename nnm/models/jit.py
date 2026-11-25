@@ -9,7 +9,7 @@ from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import LearnableRoPE2D
 from nnm.layers.transformer import TransformerBlock
 from nnm.layers.grid import patchify, unpatchify
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class JiTTransformer(nn.Module):

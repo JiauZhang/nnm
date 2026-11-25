@@ -4,7 +4,7 @@ from torch import nn
 from nnm.layers.vision.attention import ChannelAttention, WindowAttention
 from nnm.layers.drop import DropPath
 from nnm.layers.mlp import MLP
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 def _stage(value, index, default=None):

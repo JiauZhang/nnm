@@ -8,7 +8,7 @@ from nnm.layers.transformer import LayerScaleBlock, TransformerBlock
 from nnm.layers.grid import PatchEmbed2D
 from nnm.layers.vision.pooling import AttentionPool
 from nnm.layers.vision.position import resize_abs_pos
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class SigLIP2VisionEmbeddings(nn.Module):

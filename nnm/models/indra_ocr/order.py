@@ -3,7 +3,7 @@ import math
 import torch
 from torch import nn
 
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class OrderLayer(nn.Module):

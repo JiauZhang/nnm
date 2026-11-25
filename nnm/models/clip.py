@@ -7,7 +7,7 @@ from nnm.layers.attention_mask import make_causal_mask
 from nnm.layers.mlp import MLP
 from nnm.layers.transformer import LayerScaleBlock, TransformerBlock
 from nnm.layers.vision.position import resize_abs_pos
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class CLIPVisionEmbeddings(nn.Module):

@@ -1,7 +1,7 @@
 import torch
 
 from nnm.models.navit import NaViTPreprocessor, Siglip2NaViT
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 from nnm.models.qwen3 import Qwen3ForCausalLM
 
 from .visual import OXRVisualTokenizer, VisualVocabularyEmbedding

@@ -31,7 +31,7 @@ def repo_variant(model_path):
 def test_pretrained_loads(require_model_path, weight_limit):
     weight_limit(require_model_path)
     entry, variant = repo_variant(require_model_path)
-    model = KittenTTS.from_pretrained(require_model_path, variant=variant).eval()
+    model = KittenTTS.from_pretrained(require_model_path, config={"variant": variant}).eval()
     config = Config.from_json(str(Path(require_model_path) / entry["config"]))
     out, _, _ = infer(model, config.n_token)
     assert out["waveform"].numel() > 0
@@ -45,7 +45,7 @@ def test_matches_upstream(require_model_path, require_reference_path, weight_lim
 
     entry, variant = repo_variant(require_model_path)
     config = Config.from_json(str(Path(require_model_path) / entry["config"]))
-    model = KittenTTS.from_pretrained(require_model_path, variant=variant).eval()
+    model = KittenTTS.from_pretrained(require_model_path, config={"variant": variant}).eval()
 
     source = entry["sources"][0]
     weights_path = hf_hub_download(source["repo"], source["pattern"])

@@ -2,7 +2,7 @@ from torch import nn
 
 from nnm.layers.dit import DiTBlock
 from nnm.layers.vq import BitwiseResidualVQ
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class BitwiseClassifier(nn.Module):

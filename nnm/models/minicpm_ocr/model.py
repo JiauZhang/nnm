@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from nnm.layers.embedding import merge_placeholders
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 from nnm.models.minicpm_ocr.text import Qwen3_5Model
 from nnm.models.minicpm_ocr.vision import MiniCPMOcrMerger, MiniCPMOcrVisionModel
 

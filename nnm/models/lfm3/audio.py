@@ -8,7 +8,7 @@ from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.models.lfm2 import Lfm2DecoderLayer
 from nnm.models.lfm3.language import Attention, DecoderLayer, Lfm3EmbeddingModel
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class AudioDownsampler(nn.Module):

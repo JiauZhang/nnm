@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from nnm.models.modernbert import ModernBertModel
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class Laya(PretrainedModel):

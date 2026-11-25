@@ -5,7 +5,7 @@ from nnm.backends.sdpa import scaled_dot_product_attention
 from nnm.layers.dit import AdaLNModulation, FinalLayer, JointAttention, TimestepEmbedder, modulate
 from nnm.layers.grid import PatchEmbed2D, unpatchify
 from nnm.layers.mlp import MLP
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class MMDiTBlock(nn.Module):

@@ -9,7 +9,7 @@ from nnm.layers.mlp import MLP
 from nnm.layers.sinusoidal import sinusoidal_embedding
 from nnm.layers.transformer import CrossTransformerBlock, TransformerBlock
 from nnm.models.davit import DaViT
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class BartEmbeddings(nn.Module):

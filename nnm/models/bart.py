@@ -4,7 +4,7 @@ from torch import nn
 
 from nnm.backends.sdpa import scaled_dot_product_attention
 from nnm.layers.activation import get_activation
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class BartLearnedPositionalEmbedding(nn.Embedding):

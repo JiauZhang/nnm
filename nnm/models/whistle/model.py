@@ -5,7 +5,7 @@ import wave
 import numpy as np
 import torch
 
-from ..pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 from .frontend import ConvStem, LogMel
 from .stacks import DecoderStack, EncoderStack
 from .tokenizer import WhistleTokenizer

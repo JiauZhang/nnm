@@ -2,7 +2,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from nnm.models.indra_ocr.det import Stage
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class IndraOCROrientation(PretrainedModel):

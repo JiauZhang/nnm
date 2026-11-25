@@ -7,7 +7,7 @@ from nnm.layers.grid import PatchEmbed2D
 from nnm.layers.mlp import GatedMLP, MLP
 from nnm.layers.rope import RopePositionEmbedding
 from nnm.layers.transformer import LayerScaleBlock, RotaryLayerScaleBlock
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 def build_block_ffn(config, hidden_size):

@@ -5,7 +5,7 @@ from torch import nn
 from nnm.layers.attention import SelfAttention
 from nnm.layers.mlp import MLP
 from nnm.layers.transformer import TransformerBlock
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class GPT2Attention(SelfAttention):

@@ -4,7 +4,7 @@ from torch import nn
 from nnm.layers.embedding import merge_placeholders
 from nnm.models.lfm3.language import Lfm3EmbeddingModel
 from nnm.models.lfm3.vision import Lfm3VisionProjector, Lfm3VlVisionModel
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class Lfm3VlModel(PretrainedModel):

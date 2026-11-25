@@ -5,7 +5,7 @@ from nnm.layers.attention import RotarySelfAttention
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.rope import RoPE, rotary_inv_freq
 from nnm.layers.transformer import TransformerBlock
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class Qwen2MLP(GatedMLP):

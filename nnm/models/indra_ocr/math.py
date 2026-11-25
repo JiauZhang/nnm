@@ -6,7 +6,7 @@ from torch import nn
 
 from nnm.layers.sinusoidal import sinusoidal_embedding
 from nnm.models.indra_ocr.rec import ConvBlock
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class MathClassifier(nn.Module):

@@ -5,7 +5,7 @@ from torch import nn
 from nnm.cache import Cache, KVCache
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 from nnm.models.qwen3 import make_qwen3_layer
 
 

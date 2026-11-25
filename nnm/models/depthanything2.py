@@ -2,7 +2,7 @@ import torch.nn.functional as F
 
 from nnm.models.dino import DINOv2
 from nnm.models.dpt import DPTHead
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 TAP_INDICES = {
     "vits": (2, 5, 8, 11),

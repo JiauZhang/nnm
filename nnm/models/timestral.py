@@ -6,7 +6,7 @@ from nnm.backends.sdpa import scaled_dot_product_attention as torch_sdpa
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, apply_rope, rotary_inv_freq
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 LAYER_KINDS = {
     "time": (True,),

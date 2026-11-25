@@ -4,7 +4,7 @@ from torch import nn
 from nnm.layers.diffusion.kdiffusion import KDiffusion
 from nnm.layers.diffusion.schedule import LogNormalDistribution
 from nnm.models.albert import AlbertModel
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 from .decoder import Decoder
 from .diffusion import AudioDiffusionConditional, DiffusionTransformer1d, StyleTransformer1d

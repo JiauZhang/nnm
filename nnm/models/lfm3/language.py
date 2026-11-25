@@ -7,7 +7,7 @@ from nnm.layers.conv import ShortConv
 from nnm.layers.mlp import GatedMLP
 from nnm.layers.norm import RMSNorm
 from nnm.layers.rope import RoPE, rotary_inv_freq
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 
 
 class Attention(RotarySelfAttention):

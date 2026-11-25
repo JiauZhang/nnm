@@ -3,7 +3,7 @@ from torch import nn
 
 from nnm.cache import Cache, KVCache
 from nnm.layers.embedding import merge_placeholders
-from nnm.models.pretrained import PretrainedModel
+from nnm.pretrained import PretrainedModel
 from nnm.models.qwen3_asr.audio import Qwen3ASRAudioEncoder
 from nnm.models.qwen3_asr.text import Qwen3ASRTextModel
 

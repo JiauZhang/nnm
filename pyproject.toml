@@ -26,7 +26,7 @@ dependencies = [
     "torch>=2.7.1",
     "torchvision>=0.22.0",
     "safetensors",
-    'conippets>=0.1.15',
+    'conippets>=0.2.2',
 ]
 
 [project.urls]
